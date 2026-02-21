@@ -124,7 +124,7 @@ async def init_db():
         row = await cursor.fetchone()
         if row[0] == 0:
             await db.executemany(
-                "INSERT INTO ai_models (provider, model_id, display_name, is_default) VALUES (?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO ai_models (provider, model_id, display_name, is_default) VALUES (?, ?, ?, ?)",
                 [
                     ("groq", "openai/gpt-oss-120b", "GPT-OSS 120B (Groq)", 1),
                     ("openrouter", "arcee-ai/trinity-large-preview:free", "Trinity Large Preview (Free)", 0),
@@ -139,7 +139,7 @@ async def init_db():
             from passlib.hash import bcrypt
             hashed = bcrypt.hash("admin123")
             await db.execute(
-                "INSERT INTO admin (username, password_hash) VALUES (?, ?)",
+                "INSERT OR IGNORE INTO admin (username, password_hash) VALUES (?, ?)",
                 ("admin", hashed)
             )
             await db.commit()
