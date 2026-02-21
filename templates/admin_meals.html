@@ -1,0 +1,295 @@
+{% extends "base.html" %}
+{% block title %}Manage Meals — Diet Plan Admin{% endblock %}
+{% block body_class %}admin-page{% endblock %}
+
+{% block body %}
+<div class="admin-container">
+    <!-- Sidebar -->
+    <aside class="admin-sidebar glass-card">
+        <div class="sidebar-header">
+            <span class="logo-icon">🥗</span>
+            <h2>Diet Plan</h2>
+            <span class="badge">Admin</span>
+        </div>
+        <nav class="sidebar-nav">
+            <a href="/admin" class="nav-item">
+                <span>📊</span> Overview
+            </a>
+            <a href="/admin#upload" class="nav-item">
+                <span>📤</span> Upload Meals
+            </a>
+            <a href="/admin/meals" class="nav-item active">
+                <span>🍽️</span> Manage Meals
+            </a>
+            <a href="/admin#models" class="nav-item">
+                <span>🤖</span> AI Models
+            </a>
+            <a href="/admin/activity" class="nav-item">
+                <span>📋</span> Activity Logs
+            </a>
+            <a href="/admin#settings" class="nav-item">
+                <span>⚙️</span> Settings
+            </a>
+        </nav>
+        <div class="sidebar-footer">
+            <a href="/admin/logout" class="nav-item logout">
+                <span>🚪</span> Logout
+            </a>
+        </div>
+    </aside>
+
+    <!-- Mobile Header -->
+    <header class="admin-mobile-header">
+        <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+        <h2>Manage Meals</h2>
+        <a href="/admin/logout" class="header-btn" title="Logout">🚪</a>
+    </header>
+
+    <!-- Main Content -->
+    <main class="admin-main">
+        <h1 class="admin-title">Manage Meals ({{ total }} meals)</h1>
+
+        <!-- Week Navigation -->
+        <div class="week-nav glass-card">
+            <div class="week-nav-row">
+                {% if not view_all %}
+                <a href="/admin/meals?week_offset={{ week_offset - 1 }}" class="date-btn">‹</a>
+                <div class="week-label">
+                    <strong>{{ week_start.strftime('%b %d') }} — {{ week_end.strftime('%b %d, %Y') }}</strong>
+                </div>
+                <a href="/admin/meals?week_offset={{ week_offset + 1 }}" class="date-btn">›</a>
+                {% else %}
+                <div class="week-label"><strong>All Meals</strong></div>
+                {% endif %}
+            </div>
+            <div class="week-nav-actions">
+                {% if week_offset != 0 and not view_all %}
+                <a href="/admin/meals" class="btn btn-sm btn-secondary">This Week</a>
+                {% endif %}
+                {% if view_all %}
+                <a href="/admin/meals" class="btn btn-sm btn-primary">Week View</a>
+                {% else %}
+                <a href="/admin/meals?view_all=1" class="btn btn-sm btn-secondary">View All</a>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Add New Meal Form -->
+        <div class="add-meal-section glass-card">
+            <div class="add-meal-header" onclick="toggleAddForm()">
+                <h3>➕ Add New Meal</h3>
+                <span class="toggle-icon" id="add-toggle">▼</span>
+            </div>
+            <form class="add-meal-form hidden" id="add-meal-form" hx-post="/admin/meal/add" hx-target="#meals-tbody"
+                hx-swap="beforeend" hx-on::after-request="if(event.detail.successful) this.reset()">
+                <div class="add-form-grid">
+                    <div class="input-group">
+                        <input type="date" name="plan_date" required class="inline-input"
+                            value="{{ today.isoformat() }}">
+                        <label class="input-label">Date</label>
+                    </div>
+                    <div class="input-group">
+                        <select name="meal_type" required class="inline-input">
+                            {% for mt in meal_type_order %}
+                            <option value="{{ mt }}">{{ meal_type_labels[mt] }}</option>
+                            {% endfor %}
+                        </select>
+                        <label class="input-label">Meal Type</label>
+                    </div>
+                    <div class="input-group">
+                        <input type="text" name="dish_name" required placeholder="e.g., Oatmeal with Berries"
+                            class="inline-input">
+                        <label class="input-label">Dish Name</label>
+                    </div>
+                    <div class="input-group">
+                        <input type="text" name="description" placeholder="Short description" class="inline-input">
+                        <label class="input-label">Description</label>
+                    </div>
+                    <div class="input-group">
+                        <input type="number" name="calories" value="0" min="0" class="inline-input">
+                        <label class="input-label">Calories</label>
+                    </div>
+                    <div class="add-macros-row">
+                        <div class="input-group">
+                            <input type="number" name="protein_g" value="0" step="0.1" min="0" class="inline-input">
+                            <label class="input-label">Protein(g)</label>
+                        </div>
+                        <div class="input-group">
+                            <input type="number" name="carbs_g" value="0" step="0.1" min="0" class="inline-input">
+                            <label class="input-label">Carbs(g)</label>
+                        </div>
+                        <div class="input-group">
+                            <input type="number" name="fat_g" value="0" step="0.1" min="0" class="inline-input">
+                            <label class="input-label">Fat(g)</label>
+                        </div>
+                        <div class="input-group">
+                            <input type="number" name="fiber_g" value="0" step="0.1" min="0" class="inline-input">
+                            <label class="input-label">Fiber(g)</label>
+                        </div>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary" style="margin-top: 0.75rem;">
+                    <span class="btn-icon">✅</span> Add Meal
+                </button>
+            </form>
+        </div>
+
+        <!-- Meals Table -->
+        <div class="admin-section glass-card meals-table-section">
+            {% if meals|length > 0 %}
+            <div class="table-responsive">
+                <table class="admin-table editable-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Type</th>
+                            <th>Dish Name</th>
+                            <th>Cal</th>
+                            <th>P / C / F</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="meals-tbody">
+                        {% for meal in meals %}
+                        <tr id="meal-row-{{ meal.id }}">
+                            <td>
+                                <input type="date" value="{{ meal.plan_date }}" class="inline-input"
+                                    hx-post="/admin/meal/{{ meal.id }}/edit" hx-include="closest tr"
+                                    hx-target="#meal-row-{{ meal.id }}" hx-swap="outerHTML" name="plan_date">
+                            </td>
+                            <td>
+                                <select class="inline-input" name="meal_type" hx-post="/admin/meal/{{ meal.id }}/edit"
+                                    hx-include="closest tr" hx-target="#meal-row-{{ meal.id }}" hx-swap="outerHTML">
+                                    <option value="breakfast" {% if meal.meal_type=='breakfast' %}selected{% endif %}>🌅
+                                        Breakfast</option>
+                                    <option value="morning_snack" {% if meal.meal_type=='morning_snack' %}selected{%
+                                        endif %}>🍎 Morning Snack</option>
+                                    <option value="lunch" {% if meal.meal_type=='lunch' %}selected{% endif %}>☀️ Lunch
+                                    </option>
+                                    <option value="afternoon_snack" {% if meal.meal_type=='afternoon_snack' %}selected{%
+                                        endif %}>🫐 Afternoon Snack</option>
+                                    <option value="dinner" {% if meal.meal_type=='dinner' %}selected{% endif %}>🌙
+                                        Dinner</option>
+                                    <option value="evening_snack" {% if meal.meal_type=='evening_snack' %}selected{%
+                                        endif %}>🌜 Evening Snack</option>
+                                </select>
+                            </td>
+                            <td>
+                                <input type="text" value="{{ meal.dish_name }}" class="inline-input inline-name"
+                                    name="dish_name" hx-post="/admin/meal/{{ meal.id }}/edit" hx-include="closest tr"
+                                    hx-target="#meal-row-{{ meal.id }}" hx-swap="outerHTML" hx-trigger="change">
+                            </td>
+                            <td>
+                                <input type="number" value="{{ meal.calories }}" class="inline-input inline-num"
+                                    name="calories" hx-post="/admin/meal/{{ meal.id }}/edit" hx-include="closest tr"
+                                    hx-target="#meal-row-{{ meal.id }}" hx-swap="outerHTML" hx-trigger="change">
+                            </td>
+                            <td class="macros-cell">
+                                <input type="number" value="{{ meal.protein_g }}" class="inline-input inline-micro"
+                                    name="protein_g" step="0.1" hx-post="/admin/meal/{{ meal.id }}/edit"
+                                    hx-include="closest tr" hx-target="#meal-row-{{ meal.id }}" hx-swap="outerHTML"
+                                    hx-trigger="change">
+                                <input type="number" value="{{ meal.carbs_g }}" class="inline-input inline-micro"
+                                    name="carbs_g" step="0.1" hx-post="/admin/meal/{{ meal.id }}/edit"
+                                    hx-include="closest tr" hx-target="#meal-row-{{ meal.id }}" hx-swap="outerHTML"
+                                    hx-trigger="change">
+                                <input type="number" value="{{ meal.fat_g }}" class="inline-input inline-micro"
+                                    name="fat_g" step="0.1" hx-post="/admin/meal/{{ meal.id }}/edit"
+                                    hx-include="closest tr" hx-target="#meal-row-{{ meal.id }}" hx-swap="outerHTML"
+                                    hx-trigger="change">
+                            </td>
+                            <td class="actions-cell">
+                                <button class="btn btn-sm btn-copy"
+                                    onclick="openCopyModal({{ meal.id }}, '{{ meal.dish_name | replace("'", "\\'") }}')"
+                                    title="Copy to another day">📋</button>
+                                <button class="btn btn-sm btn-danger" hx-delete="/admin/meal/{{ meal.id }}"
+                                    hx-target="#meal-row-{{ meal.id }}" hx-swap="outerHTML"
+                                    hx-confirm="Delete this meal?">🗑️</button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state" id="meals-empty">
+                <span class="empty-icon">🍽️</span>
+                <h3>No meals for this week</h3>
+                <p>Add meals using the form above or upload a CSV.</p>
+            </div>
+            <tbody id="meals-tbody" style="display:none;"></tbody>
+            {% endif %}
+        </div>
+    </main>
+</div>
+
+<!-- Copy Meal Modal -->
+<div class="dish-modal-overlay" id="copy-modal" onclick="closeCopyModal(event)">
+    <div class="dish-modal glass-card" onclick="event.stopPropagation()" style="max-width: 400px;">
+        <button class="modal-close" onclick="closeCopyModal()">&times;</button>
+        <div class="dish-detail-content">
+            <h2 style="margin-bottom: 0.5rem;">📋 Copy Meal</h2>
+            <p class="dish-description" id="copy-dish-name">Copying...</p>
+            <form hx-post="" id="copy-form" hx-target="#copy-result" hx-swap="innerHTML">
+                <div class="input-group">
+                    <input type="date" name="target_date" required class="input-field" id="copy-target-date"
+                        value="{{ today.isoformat() }}">
+                    <label class="input-label">Copy to date</label>
+                </div>
+                <div class="quick-dates">
+                    {% for i in range(7) %}
+                    {% set d = today + timedelta(days=i) %}
+                    <button type="button" class="btn btn-sm btn-secondary quick-date-btn"
+                        onclick="document.getElementById('copy-target-date').value='{{ d.isoformat() }}'">
+                        {% if i == 0 %}Today{% elif i == 1 %}Tomorrow{% else %}{{ d.strftime('%a %d') }}{% endif %}
+                    </button>
+                    {% endfor %}
+                </div>
+                <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 1rem;">
+                    <span class="btn-icon">📋</span> Copy Meal
+                </button>
+            </form>
+            <div id="copy-result" style="margin-top: 0.75rem;"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Mobile sidebar overlay -->
+<div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
+
+<script>
+    function toggleSidebar() {
+        document.querySelector('.admin-sidebar').classList.toggle('open');
+        document.getElementById('sidebar-overlay').classList.toggle('active');
+    }
+
+    function toggleAddForm() {
+        const form = document.getElementById('add-meal-form');
+        const toggle = document.getElementById('add-toggle');
+        form.classList.toggle('hidden');
+        toggle.textContent = form.classList.contains('hidden') ? '▼' : '▲';
+    }
+
+    function openCopyModal(mealId, dishName) {
+        document.getElementById('copy-modal').classList.add('active');
+        document.getElementById('copy-dish-name').textContent = 'Copying: ' + dishName;
+        document.getElementById('copy-form').setAttribute('hx-post', '/admin/meal/' + mealId + '/copy');
+        document.getElementById('copy-result').innerHTML = '';
+        // Re-process HTMX for the updated form
+        htmx.process(document.getElementById('copy-form'));
+        document.body.style.overflow = 'hidden';
+    }
+
+    function closeCopyModal(e) {
+        if (e && e.target !== document.getElementById('copy-modal')) return;
+        document.getElementById('copy-modal').classList.remove('active');
+        document.body.style.overflow = '';
+    }
+</script>
+{% endblock %}
+
+{% block head %}
+<style>
+    /* timedelta jinja2 support */
+</style>
+{% endblock %}
