@@ -71,8 +71,21 @@
                 {% else %}
                 <a href="/admin/meals?view_all=1" class="btn btn-sm btn-secondary">View All</a>
                 {% endif %}
+
+                <!-- Clear Week Button -->
+                {% if not view_all and total > 0 %}
+                <button class="btn btn-sm btn-danger"
+                    hx-delete="/admin/meals/clear-week?week_start={{ week_start.isoformat() }}&week_end={{ week_end.isoformat() }}"
+                    hx-target="#clear-result" hx-swap="innerHTML"
+                    hx-confirm="⚠️ Delete ALL {{ total }} meals for this week ({{ week_start.strftime('%b %d') }} — {{ week_end.strftime('%b %d') }})? This cannot be undone!">
+                    🗑️ Clear Week
+                </button>
+                {% endif %}
             </div>
         </div>
+
+        <!-- Clear result -->
+        <div id="clear-result"></div>
 
         <!-- Add New Meal Form -->
         <div class="add-meal-section glass-card">
@@ -108,6 +121,15 @@
                     <div class="input-group">
                         <input type="number" name="calories" value="0" min="0" class="inline-input">
                         <label class="input-label">Calories</label>
+                    </div>
+                    <div class="input-group">
+                        <select name="profile_id" class="inline-input">
+                            <option value="0">👥 Everyone</option>
+                            {% for p in profiles %}
+                            <option value="{{ p.id }}">{{ p.name }}</option>
+                            {% endfor %}
+                        </select>
+                        <label class="input-label">Assign To</label>
                     </div>
                     <div class="add-macros-row">
                         <div class="input-group">
@@ -146,6 +168,7 @@
                             <th>Dish Name</th>
                             <th>Cal</th>
                             <th>P / C / F</th>
+                            <th>Assigned To</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
@@ -198,9 +221,21 @@
                                     hx-include="closest tr" hx-target="#meal-row-{{ meal.id }}" hx-swap="outerHTML"
                                     hx-trigger="change">
                             </td>
+                            <td>
+                                <select class="inline-input inline-assign" name="profile_id"
+                                    hx-post="/admin/meal/{{ meal.id }}/edit" hx-include="closest tr"
+                                    hx-target="#meal-row-{{ meal.id }}" hx-swap="outerHTML">
+                                    <option value="0" {% if not meal.profile_id %}selected{% endif %}>👥 Everyone
+                                    </option>
+                                    {% for p in profiles %}
+                                    <option value="{{ p.id }}" {% if meal.profile_id==p.id %}selected{% endif %}>{{
+                                        p.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </td>
                             <td class="actions-cell">
                                 <button class="btn btn-sm btn-copy"
-                                    onclick="openCopyModal({{ meal.id }}, '{{ meal.dish_name | replace("'", "\\'") }}')"
+                                    onclick="openCopyModal({{ meal.id }}, '{{ meal.dish_name | replace(chr(39), chr(92)+chr(39)) }}')"
                                     title="Copy to another day">📋</button>
                                 <button class="btn btn-sm btn-danger" hx-delete="/admin/meal/{{ meal.id }}"
                                     hx-target="#meal-row-{{ meal.id }}" hx-swap="outerHTML"
@@ -275,7 +310,6 @@
         document.getElementById('copy-dish-name').textContent = 'Copying: ' + dishName;
         document.getElementById('copy-form').setAttribute('hx-post', '/admin/meal/' + mealId + '/copy');
         document.getElementById('copy-result').innerHTML = '';
-        // Re-process HTMX for the updated form
         htmx.process(document.getElementById('copy-form'));
         document.body.style.overflow = 'hidden';
     }
@@ -286,10 +320,4 @@
         document.body.style.overflow = '';
     }
 </script>
-{% endblock %}
-
-{% block head %}
-<style>
-    /* timedelta jinja2 support */
-</style>
 {% endblock %}

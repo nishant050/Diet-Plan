@@ -54,7 +54,9 @@ async def init_db():
                 carbs_g REAL DEFAULT 0,
                 fat_g REAL DEFAULT 0,
                 fiber_g REAL DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                profile_id INTEGER DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (profile_id) REFERENCES profiles(id)
             );
 
             CREATE TABLE IF NOT EXISTS meal_checks (
@@ -103,11 +105,19 @@ async def init_db():
             );
 
             CREATE INDEX IF NOT EXISTS idx_meal_plans_date ON meal_plans(plan_date);
+            CREATE INDEX IF NOT EXISTS idx_meal_plans_profile ON meal_plans(profile_id);
             CREATE INDEX IF NOT EXISTS idx_meal_checks_profile ON meal_checks(profile_id);
             CREATE INDEX IF NOT EXISTS idx_activity_logs_profile ON activity_logs(profile_id);
             CREATE INDEX IF NOT EXISTS idx_device_profile ON device_profile_map(device_fingerprint);
         """)
         await db.commit()
+
+        # Migration: add profile_id column if missing (for existing databases)
+        try:
+            await db.execute("SELECT profile_id FROM meal_plans LIMIT 1")
+        except Exception:
+            await db.execute("ALTER TABLE meal_plans ADD COLUMN profile_id INTEGER DEFAULT NULL REFERENCES profiles(id)")
+            await db.commit()
 
         # Seed default AI models
         cursor = await db.execute("SELECT COUNT(*) as cnt FROM ai_models")

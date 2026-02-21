@@ -2085,6 +2085,11 @@ select.input-field {
     }
 }
 
+.inline-assign {
+    min-width: 100px;
+    font-size: 0.75rem;
+}
+
 /* Quick dates for copy */
 .quick-dates {
     display: flex;
