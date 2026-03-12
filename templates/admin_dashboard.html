@@ -216,6 +216,12 @@
                         <p class="model-id">{{ model.model_id }}</p>
                         <p class="model-key">API Key: {{ '••••' + model.api_key[-4:] if model.api_key else '🔑 Using
                             ENV' }}</p>
+                        {% if model.provider == 'gemini' %}
+                        <p class="model-key">
+                            Search grounding: {{ 'On' if model.search_grounding else 'Off' }} |
+                            Video link: {{ 'On' if model.include_youtube else 'Off' }}
+                        </p>
+                        {% endif %}
                         <div class="model-actions">
                             {% if not model.is_default %}
                             <form action="/admin/model/default/{{ model.id }}" method="post" style="display:inline;">
@@ -260,6 +266,16 @@
                                 class="input-field">
                             <label class="input-label">API Key (optional)</label>
                         </div>
+                    </div>
+                    <div class="form-row">
+                        <label class="checkbox-row">
+                            <input type="checkbox" name="search_grounding" value="1" checked>
+                            <span>Enable Gemini web search grounding</span>
+                        </label>
+                        <label class="checkbox-row">
+                            <input type="checkbox" name="include_youtube" value="1" checked>
+                            <span>Include recipe video link for Gemini</span>
+                        </label>
                     </div>
                     <button type="submit" class="btn btn-primary">
                         <span class="btn-icon">➕</span>

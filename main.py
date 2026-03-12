@@ -6,6 +6,7 @@ import os
 import io
 import csv
 import json
+from collections import defaultdict
 from datetime import datetime, date, timedelta
 from contextlib import asynccontextmanager
 
@@ -119,6 +120,219 @@ MEAL_TYPE_LABELS = {
 
 
 # ──────────────────────── User Routes ────────────────────────
+
+def parse_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def sort_meal_type(meal_type: str) -> int:
+    if meal_type in MEAL_TYPE_ORDER:
+        return MEAL_TYPE_ORDER.index(meal_type)
+    return len(MEAL_TYPE_ORDER)
+
+
+def serialize_profile(profile: dict) -> dict:
+    return {
+        "id": str(profile["_id"]),
+        "name": profile.get("name", "Unnamed"),
+        "created_at": profile.get("created_at"),
+    }
+
+
+def normalize_meal_doc(meal: dict, profile_map: dict) -> dict:
+    profile_id = str(meal.get("profile_id")) if meal.get("profile_id") else "0"
+    calories = parse_int(meal.get("calories", 0))
+    protein_g = parse_float(meal.get("protein_g", 0))
+    carbs_g = parse_float(meal.get("carbs_g", 0))
+    fat_g = parse_float(meal.get("fat_g", 0))
+    fiber_g = parse_float(meal.get("fiber_g", 0))
+    is_personal = profile_id != "0"
+
+    return {
+        "id": str(meal["_id"]),
+        "plan_date": meal.get("plan_date", ""),
+        "meal_type": meal.get("meal_type", ""),
+        "meal_type_label": MEAL_TYPE_LABELS.get(
+            meal.get("meal_type", ""),
+            str(meal.get("meal_type", "")).replace("_", " ").title(),
+        ),
+        "dish_name": meal.get("dish_name", "").strip(),
+        "description": meal.get("description", "").strip(),
+        "calories": calories,
+        "protein_g": protein_g,
+        "carbs_g": carbs_g,
+        "fat_g": fat_g,
+        "fiber_g": fiber_g,
+        "profile_id": profile_id,
+        "assigned_to": profile_map.get(profile_id, "Everyone") if is_personal else "Everyone",
+        "assignment_scope": "Assigned" if is_personal else "Everyone",
+        "is_personal": is_personal,
+    }
+
+
+def build_day_sections(meals: list[dict], view_all: int, today: date, week_start: date | None = None) -> list[dict]:
+    buckets: dict[str, list[dict]] = defaultdict(list)
+    for meal in meals:
+        buckets[meal["plan_date"]].append(meal)
+
+    day_keys = sorted(buckets.keys())
+    if not view_all and week_start is not None:
+        day_keys = [(week_start + timedelta(days=offset)).isoformat() for offset in range(7)]
+
+    sections = []
+    for day_key in day_keys:
+        day_date = date.fromisoformat(day_key)
+        day_meals = sorted(buckets.get(day_key, []), key=lambda item: sort_meal_type(item["meal_type"]))
+        sections.append({
+            "iso": day_key,
+            "date": day_date,
+            "label": day_date.strftime("%a %d %b"),
+            "long_label": day_date.strftime("%A, %d %b %Y"),
+            "is_today": day_date == today,
+            "meal_count": len(day_meals),
+            "total_calories": sum(item["calories"] for item in day_meals),
+            "meals": day_meals,
+        })
+
+    return sections
+
+
+async def load_meal_templates(db, limit: int = 8) -> list[dict]:
+    pipeline = [
+        {"$sort": {"created_at": DESCENDING}},
+        {
+            "$group": {
+                "_id": {
+                    "dish_name": "$dish_name",
+                    "meal_type": "$meal_type",
+                    "profile_id": "$profile_id",
+                },
+                "dish_name": {"$first": "$dish_name"},
+                "meal_type": {"$first": "$meal_type"},
+                "description": {"$first": "$description"},
+                "calories": {"$first": "$calories"},
+                "protein_g": {"$first": "$protein_g"},
+                "carbs_g": {"$first": "$carbs_g"},
+                "fat_g": {"$first": "$fat_g"},
+                "fiber_g": {"$first": "$fiber_g"},
+                "profile_id": {"$first": "$profile_id"},
+                "uses": {"$sum": 1},
+            }
+        },
+        {"$sort": {"uses": DESCENDING, "dish_name": ASCENDING}},
+        {"$limit": limit},
+    ]
+
+    docs = await db.meal_plans.aggregate(pipeline).to_list(length=limit)
+    templates_list = []
+    for doc in docs:
+        profile_id = str(doc.get("profile_id")) if doc.get("profile_id") else "0"
+        templates_list.append({
+            "dish_name": doc.get("dish_name", ""),
+            "meal_type": doc.get("meal_type", "lunch"),
+            "meal_type_label": MEAL_TYPE_LABELS.get(
+                doc.get("meal_type", "lunch"),
+                str(doc.get("meal_type", "lunch")).replace("_", " ").title(),
+            ),
+            "description": doc.get("description", "") or "",
+            "calories": parse_int(doc.get("calories", 0)),
+            "protein_g": parse_float(doc.get("protein_g", 0)),
+            "carbs_g": parse_float(doc.get("carbs_g", 0)),
+            "fat_g": parse_float(doc.get("fat_g", 0)),
+            "fiber_g": parse_float(doc.get("fiber_g", 0)),
+            "profile_id": profile_id,
+            "uses": doc.get("uses", 1),
+        })
+
+    return templates_list
+
+
+async def build_admin_meals_context(
+    request: Request,
+    week_offset: int = 0,
+    view_all: int = 0,
+    meal_type_filter: str = "all",
+    assignee_filter: str = "all",
+    q: str = "",
+    flash_message: dict | None = None,
+):
+    db = await get_db()
+    today = date.today()
+
+    profile_docs = await db.profiles.find().sort("name", ASCENDING).to_list(length=None)
+    profiles = [serialize_profile(profile) for profile in profile_docs]
+    profile_map = {profile["id"]: profile["name"] for profile in profiles}
+
+    week_start = None
+    week_end = None
+    scope_query = {}
+    if not view_all:
+        week_start = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
+        week_end = week_start + timedelta(days=6)
+        scope_query["plan_date"] = {"$gte": week_start.isoformat(), "$lte": week_end.isoformat()}
+
+    query = dict(scope_query)
+    if meal_type_filter != "all":
+        query["meal_type"] = meal_type_filter
+
+    if assignee_filter == "everyone":
+        query["profile_id"] = None
+    elif assignee_filter != "all":
+        query["profile_id"] = assignee_filter
+
+    if q.strip():
+        query["$or"] = [
+            {"dish_name": {"$regex": q.strip(), "$options": "i"}},
+            {"description": {"$regex": q.strip(), "$options": "i"}},
+        ]
+
+    scope_total = await db.meal_plans.count_documents(scope_query)
+    visible_total = await db.meal_plans.count_documents(query)
+    raw_meals = await db.meal_plans.find(query).sort([("plan_date", ASCENDING), ("meal_type", ASCENDING)]).to_list(length=None)
+    meals = [normalize_meal_doc(meal, profile_map) for meal in raw_meals]
+    day_sections = build_day_sections(meals, view_all, today, week_start)
+
+    summary = {
+        "visible_total": visible_total,
+        "scope_total": scope_total,
+        "day_count": len([section for section in day_sections if section["meal_count"] > 0]) if view_all else len(day_sections),
+        "everyone_total": sum(1 for meal in meals if not meal["is_personal"]),
+        "assigned_total": sum(1 for meal in meals if meal["is_personal"]),
+        "total_calories": sum(meal["calories"] for meal in meals),
+    }
+
+    return {
+        "request": request,
+        "today": today,
+        "meals": meals,
+        "day_sections": day_sections,
+        "profiles": profiles,
+        "templates_list": await load_meal_templates(db),
+        "summary": summary,
+        "week_offset": week_offset,
+        "week_start": week_start,
+        "week_end": week_end,
+        "view_all": view_all,
+        "meal_type_labels": MEAL_TYPE_LABELS,
+        "meal_type_order": MEAL_TYPE_ORDER,
+        "filters": {
+            "meal_type_filter": meal_type_filter,
+            "assignee_filter": assignee_filter,
+            "q": q.strip(),
+        },
+        "flash_message": flash_message,
+    }
+
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -684,53 +898,217 @@ async def upload_meals(request: Request, file: UploadFile = File(...)):
 
 
 @app.get("/admin/meals", response_class=HTMLResponse)
-async def admin_meals(request: Request, week_offset: int = 0, view_all: int = 0):
+async def admin_meals(
+    request: Request,
+    week_offset: int = 0,
+    view_all: int = 0,
+    meal_type_filter: str = "all",
+    assignee_filter: str = "all",
+    q: str = "",
+):
     if not get_admin_session(request):
         return RedirectResponse(url="/admin/login", status_code=302)
 
-    today = date.today()
+    context = await build_admin_meals_context(
+        request,
+        week_offset=week_offset,
+        view_all=view_all,
+        meal_type_filter=meal_type_filter,
+        assignee_filter=assignee_filter,
+        q=q,
+    )
+    return templates.TemplateResponse("admin_meals.html", context)
+
+
+@app.get("/admin/meals/board", response_class=HTMLResponse)
+async def admin_meals_board(
+    request: Request,
+    week_offset: int = 0,
+    view_all: int = 0,
+    meal_type_filter: str = "all",
+    assignee_filter: str = "all",
+    q: str = "",
+):
+    if not get_admin_session(request):
+        return HTMLResponse("Unauthorized", status_code=401)
+
+    context = await build_admin_meals_context(
+        request,
+        week_offset=week_offset,
+        view_all=view_all,
+        meal_type_filter=meal_type_filter,
+        assignee_filter=assignee_filter,
+        q=q,
+    )
+    return templates.TemplateResponse("admin_meals_board.html", context)
+
+
+@app.post("/admin/meal/save", response_class=HTMLResponse)
+async def save_meal(
+    request: Request,
+    meal_id: str = Form(""),
+    plan_date: str = Form(...),
+    meal_type: str = Form(...),
+    dish_name: str = Form(...),
+    description: str = Form(""),
+    calories: float = Form(0),
+    protein_g: float = Form(0),
+    carbs_g: float = Form(0),
+    fat_g: float = Form(0),
+    fiber_g: float = Form(0),
+    profile_id: str = Form("0"),
+    week_offset: int = Form(0),
+    view_all: int = Form(0),
+    meal_type_filter: str = Form("all"),
+    assignee_filter: str = Form("all"),
+    q: str = Form(""),
+):
+    if not get_admin_session(request):
+        return HTMLResponse("Unauthorized", status_code=401)
 
     db = await get_db()
-    
-    # Pre-fetch profiles for joining
-    all_profiles = await db.profiles.find().sort("name", ASCENDING).to_list(length=None)
-    profile_map = {str(p["_id"]): p["name"] for p in all_profiles}
-    
-    if view_all:
-        total = await db.meal_plans.count_documents({})
-        raw_meals = await db.meal_plans.find().sort([("plan_date", ASCENDING), ("meal_type", ASCENDING)]).to_list(length=None)
-        week_start = None
-        week_end = None
+    payload = {
+        "plan_date": plan_date,
+        "meal_type": meal_type,
+        "dish_name": dish_name.strip(),
+        "description": description.strip(),
+        "calories": parse_int(calories),
+        "protein_g": parse_float(protein_g),
+        "carbs_g": parse_float(carbs_g),
+        "fat_g": parse_float(fat_g),
+        "fiber_g": parse_float(fiber_g),
+        "profile_id": profile_id if profile_id and profile_id != "0" else None,
+    }
+
+    try:
+        date.fromisoformat(plan_date)
+    except ValueError:
+        context = await build_admin_meals_context(
+            request,
+            week_offset=week_offset,
+            view_all=view_all,
+            meal_type_filter=meal_type_filter,
+            assignee_filter=assignee_filter,
+            q=q,
+            flash_message={"kind": "error", "text": "Enter a valid date in YYYY-MM-DD format."},
+        )
+        return templates.TemplateResponse("admin_meals_board.html", context, status_code=422)
+
+    if not payload["dish_name"]:
+        context = await build_admin_meals_context(
+            request,
+            week_offset=week_offset,
+            view_all=view_all,
+            meal_type_filter=meal_type_filter,
+            assignee_filter=assignee_filter,
+            q=q,
+            flash_message={"kind": "error", "text": "Dish name is required."},
+        )
+        return templates.TemplateResponse("admin_meals_board.html", context, status_code=422)
+
+    if meal_id:
+        try:
+            await db.meal_plans.update_one(
+                {"_id": ObjectId(meal_id)},
+                {"$set": payload},
+            )
+            flash_text = f"Updated {payload['dish_name']}."
+        except Exception:
+            context = await build_admin_meals_context(
+                request,
+                week_offset=week_offset,
+                view_all=view_all,
+                meal_type_filter=meal_type_filter,
+                assignee_filter=assignee_filter,
+                q=q,
+                flash_message={"kind": "error", "text": "Meal update failed."},
+            )
+            return templates.TemplateResponse("admin_meals_board.html", context, status_code=422)
     else:
-        week_start = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
-        week_end = week_start + timedelta(days=6)
-        query = {"plan_date": {"$gte": week_start.isoformat(), "$lte": week_end.isoformat()}}
-        total = await db.meal_plans.count_documents(query)
-        raw_meals = await db.meal_plans.find(query).sort([("plan_date", ASCENDING), ("meal_type", ASCENDING)]).to_list(length=None)
+        await db.meal_plans.insert_one({
+            **payload,
+            "created_at": datetime.utcnow(),
+        })
+        flash_text = f"Added {payload['dish_name']}."
 
-    # Attach names AND format ids
-    meals = []
-    for m in raw_meals:
-        m["id"] = str(m["_id"])
-        m["assigned_to"] = profile_map.get(str(m.get("profile_id"))) if m.get("profile_id") else None
-        meals.append(m)
-        
-    for p in all_profiles:
-        p["id"] = str(p["_id"])
+    context = await build_admin_meals_context(
+        request,
+        week_offset=week_offset,
+        view_all=view_all,
+        meal_type_filter=meal_type_filter,
+        assignee_filter=assignee_filter,
+        q=q,
+        flash_message={"kind": "success", "text": flash_text},
+    )
+    return templates.TemplateResponse("admin_meals_board.html", context)
 
-    return templates.TemplateResponse("admin_meals.html", {
-        "request": request,
-        "meals": meals,
-        "total": total,
-        "week_offset": week_offset,
-        "week_start": week_start,
-        "week_end": week_end,
-        "view_all": view_all,
-        "today": today,
-        "meal_type_labels": MEAL_TYPE_LABELS,
-        "meal_type_order": MEAL_TYPE_ORDER,
-        "profiles": all_profiles,
-    })
+
+@app.post("/admin/meal/{meal_id}/delete", response_class=HTMLResponse)
+async def delete_meal_board(
+    request: Request,
+    meal_id: str,
+    week_offset: int = Form(0),
+    view_all: int = Form(0),
+    meal_type_filter: str = Form("all"),
+    assignee_filter: str = Form("all"),
+    q: str = Form(""),
+):
+    if not get_admin_session(request):
+        return HTMLResponse("Unauthorized", status_code=401)
+
+    db = await get_db()
+    await db.meal_checks.delete_many({"meal_plan_id": meal_id})
+    try:
+        await db.meal_plans.delete_one({"_id": ObjectId(meal_id)})
+        flash_message = {"kind": "success", "text": "Meal deleted."}
+    except Exception:
+        flash_message = {"kind": "error", "text": "Meal delete failed."}
+
+    context = await build_admin_meals_context(
+        request,
+        week_offset=week_offset,
+        view_all=view_all,
+        meal_type_filter=meal_type_filter,
+        assignee_filter=assignee_filter,
+        q=q,
+        flash_message=flash_message,
+    )
+    return templates.TemplateResponse("admin_meals_board.html", context)
+
+
+@app.post("/admin/meals/clear-range", response_class=HTMLResponse)
+async def clear_meal_range(
+    request: Request,
+    week_start: str = Form(...),
+    week_end: str = Form(...),
+    week_offset: int = Form(0),
+    view_all: int = Form(0),
+    meal_type_filter: str = Form("all"),
+    assignee_filter: str = Form("all"),
+    q: str = Form(""),
+):
+    if not get_admin_session(request):
+        return HTMLResponse("Unauthorized", status_code=401)
+
+    db = await get_db()
+    query = {"plan_date": {"$gte": week_start, "$lte": week_end}}
+    meals_to_delete = await db.meal_plans.find(query, {"_id": 1}).to_list(length=None)
+    meal_ids = [str(meal["_id"]) for meal in meals_to_delete]
+
+    if meal_ids:
+        await db.meal_checks.delete_many({"meal_plan_id": {"$in": meal_ids}})
+
+    deleted = (await db.meal_plans.delete_many(query)).deleted_count
+    context = await build_admin_meals_context(
+        request,
+        week_offset=week_offset,
+        view_all=view_all,
+        meal_type_filter=meal_type_filter,
+        assignee_filter=assignee_filter,
+        q=q,
+        flash_message={"kind": "success", "text": f"Cleared {deleted} meals from the selected range."},
+    )
+    return templates.TemplateResponse("admin_meals_board.html", context)
 
 
 @app.delete("/admin/meal/{meal_id}", response_class=HTMLResponse)
@@ -998,7 +1376,8 @@ async def copy_meal(request: Request, meal_id: str, target_date: str = Form(...)
 
 @app.post("/admin/model/add", response_class=HTMLResponse)
 async def add_model(request: Request, provider: str = Form(...), model_id: str = Form(...),
-                    display_name: str = Form(...), api_key: str = Form("")):
+                    display_name: str = Form(...), api_key: str = Form(""),
+                    search_grounding: str = Form("0"), include_youtube: str = Form("0")):
     if not get_admin_session(request):
         return HTMLResponse("Unauthorized", status_code=401)
 
@@ -1009,6 +1388,8 @@ async def add_model(request: Request, provider: str = Form(...), model_id: str =
         "display_name": display_name.strip(),
         "api_key": api_key.strip(),
         "is_default": 0,
+        "search_grounding": 1 if provider == "gemini" and search_grounding == "1" else 0,
+        "include_youtube": 1 if provider == "gemini" and include_youtube == "1" else 0,
         "created_at": datetime.utcnow()
     })
 

@@ -4,9 +4,13 @@ Collections: admin, profiles, device_profile_map, meal_plans, meal_checks, ai_mo
 """
 import os
 import motor.motor_asyncio
-from datetime import datetime, date
+from datetime import datetime
 
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
+DEFAULT_MONGO_URI = (
+    "mongodb+srv://admin:admin123@diet-plan.42f6xm7.mongodb.net/?appName=diet-plan"
+)
+
+MONGO_URI = os.environ.get("MONGO_URI", DEFAULT_MONGO_URI)
 DB_NAME = os.environ.get("DB_NAME", "dietplan")
 
 # Global variables to store the client and db instances
@@ -16,13 +20,19 @@ db = None
 async def init_db():
     global client, db
     if client is None:
-        client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
+        client = motor.motor_asyncio.AsyncIOMotorClient(
+            MONGO_URI,
+            serverSelectionTimeoutMS=10000,
+        )
+        await client.admin.command("ping")
         db = client[DB_NAME]
         
     # Create indexes for performance and uniqueness
     await db.admin.create_index("username", unique=True)
     await db.meal_plans.create_index("plan_date")
     await db.meal_plans.create_index("profile_id")
+    await db.meal_plans.create_index([("plan_date", 1), ("meal_type", 1)])
+    await db.meal_plans.create_index([("profile_id", 1), ("plan_date", 1)])
     await db.meal_checks.create_index([("profile_id", 1), ("meal_plan_id", 1)], unique=True)
     await db.meal_checks.create_index("profile_id")
     await db.activity_logs.create_index("profile_id")
@@ -50,13 +60,29 @@ async def init_db():
             },
             {
                 "provider": "gemini",
-                "model_id": "gemini-3.1-flash-lite-preview",
-                "display_name": "Gemini 3.1 Flash Lite Preview",
+                "model_id": "gemini-2.5-flash-lite",
+                "display_name": "Gemini 2.5 Flash Lite",
                 "api_key": "",
                 "is_default": 0,
+                "search_grounding": 1,
+                "include_youtube": 1,
                 "created_at": datetime.utcnow()
             }
         ])
+
+    await db.ai_models.update_many(
+        {"provider": "gemini", "search_grounding": {"$exists": False}},
+        {"$set": {"search_grounding": 1, "include_youtube": 1}}
+    )
+    await db.ai_models.update_many(
+        {"provider": "gemini", "model_id": "gemini-3.1-flash-lite-preview"},
+        {
+            "$set": {
+                "model_id": "gemini-2.5-flash-lite",
+                "display_name": "Gemini 2.5 Flash Lite",
+            }
+        }
+    )
 
     # Seed default admin
     if await db.admin.count_documents({}) == 0:

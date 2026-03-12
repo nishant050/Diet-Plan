@@ -1725,6 +1725,11 @@ select.input-field {
     color: var(--accent-blue);
 }
 
+.provider-gemini {
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--accent-green-light);
+}
+
 .model-badge {
     font-size: 0.7rem;
     font-weight: 600;
@@ -1762,6 +1767,21 @@ select.input-field {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 1rem;
+}
+
+.checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.9rem 1rem;
+    border-radius: var(--radius-md);
+    background: var(--bg-glass);
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.checkbox-row input {
+    accent-color: var(--accent-green);
 }
 
 /* Settings */
@@ -2147,6 +2167,475 @@ select.input-field {
 }
 
 /* ──────────── Print ──────────── */
+/* Planner board */
+.admin-meals-page .admin-main {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
+.planner-hero {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.5rem;
+    padding: 1.5rem;
+    overflow: hidden;
+    position: relative;
+}
+
+.planner-hero::before {
+    content: "";
+    position: absolute;
+    inset: auto -80px -100px auto;
+    width: 220px;
+    height: 220px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(16, 185, 129, 0.28), transparent 70%);
+    pointer-events: none;
+}
+
+.planner-kicker,
+.meal-editor-kicker {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent-green-light);
+    margin-bottom: 0.5rem;
+}
+
+.planner-subtitle,
+.meal-editor-subtitle {
+    max-width: 720px;
+    color: var(--text-secondary);
+}
+
+.planner-hero-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    position: relative;
+    z-index: 1;
+}
+
+.planner-board-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.planner-flash {
+    padding: 0.9rem 1rem;
+    border-radius: var(--radius-md);
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.planner-flash-success {
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.22);
+    color: #9ae6c3;
+}
+
+.planner-flash-error {
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.22);
+    color: #f9a8a8;
+}
+
+.planner-toolbar,
+.planner-filter-panel,
+.planner-templates {
+    padding: 1.25rem;
+}
+
+.planner-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.planner-range {
+    display: flex;
+    align-items: center;
+    gap: 0.875rem;
+}
+
+.planner-range h2 {
+    font-family: var(--font-display);
+    font-size: 1.15rem;
+}
+
+.planner-toolbar-actions {
+    display: flex;
+    gap: 0.625rem;
+    flex-wrap: wrap;
+}
+
+.planner-stats {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.875rem;
+}
+
+.planner-stat {
+    padding: 1rem 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+.planner-stat-value {
+    font-family: var(--font-display);
+    font-size: 1.6rem;
+    font-weight: 800;
+    color: var(--text-primary);
+}
+
+.planner-stat-label {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.planner-filter-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.planner-filter-top h3 {
+    font-family: var(--font-display);
+    font-size: 1.05rem;
+    margin-bottom: 0.25rem;
+}
+
+.planner-filter-form {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) repeat(2, minmax(200px, 1fr));
+    gap: 0.875rem;
+}
+
+.planner-search {
+    margin-bottom: 0;
+}
+
+.planner-template-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.875rem;
+}
+
+.planner-template-card {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+    text-align: left;
+    width: 100%;
+    padding: 1rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+
+.planner-template-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(16, 185, 129, 0.35);
+    background: rgba(16, 185, 129, 0.07);
+}
+
+.planner-template-card p {
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+}
+
+.planner-template-type,
+.planner-pill,
+.planner-assignee {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 28px;
+    padding: 0.2rem 0.65rem;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+
+.planner-template-type,
+.planner-pill {
+    background: rgba(99, 102, 241, 0.14);
+    color: #c4b5fd;
+}
+
+.planner-assignee {
+    background: rgba(16, 185, 129, 0.14);
+    color: #86efac;
+}
+
+.planner-template-meta {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
+.planner-days {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+}
+
+.planner-day {
+    padding: 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.planner-day-today {
+    border-color: rgba(16, 185, 129, 0.3);
+    box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.18);
+}
+
+.planner-day-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.planner-day-label {
+    color: var(--accent-green-light);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.3rem;
+}
+
+.planner-day-header h3 {
+    font-family: var(--font-display);
+    font-size: 1rem;
+}
+
+.planner-day-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.35rem;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+.planner-meal-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.planner-meal-card {
+    padding: 0.95rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-subtle);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.planner-meal-card-personal {
+    border-color: rgba(16, 185, 129, 0.22);
+    background: rgba(16, 185, 129, 0.05);
+}
+
+.planner-meal-top {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.65rem;
+}
+
+.planner-calories {
+    margin-left: auto;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+.planner-meal-card h4 {
+    font-size: 1rem;
+    margin-bottom: 0.35rem;
+}
+
+.planner-meal-description {
+    color: var(--text-secondary);
+    font-size: 0.84rem;
+    margin-bottom: 0.65rem;
+}
+
+.planner-macro-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    margin-bottom: 0.85rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.planner-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.planner-card-actions form {
+    display: inline-flex;
+}
+
+.planner-day-empty {
+    padding: 1rem;
+    border: 1px dashed var(--border-subtle);
+    border-radius: var(--radius-md);
+    text-align: center;
+    color: var(--text-secondary);
+}
+
+.planner-day-empty p {
+    margin-bottom: 0.75rem;
+}
+
+.planner-empty-state {
+    padding: 2rem;
+}
+
+.meal-editor-overlay {
+    z-index: 120;
+}
+
+.meal-editor-modal {
+    max-width: 760px;
+}
+
+.meal-editor-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.meal-editor-heading {
+    padding-right: 2rem;
+}
+
+.meal-editor-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.875rem;
+}
+
+.meal-editor-quickdates {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.meal-editor-textarea {
+    min-height: 110px;
+    resize: vertical;
+}
+
+.meal-macro-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.875rem;
+}
+
+.meal-editor-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+}
+
+.recipe-grounding-panel {
+    margin-top: 1.25rem;
+    padding: 1rem;
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border-subtle);
+}
+
+.recipe-video-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.6rem 0.9rem;
+    border-radius: var(--radius-md);
+    background: rgba(239, 68, 68, 0.16);
+    color: #fecaca;
+    font-weight: 700;
+    margin-bottom: 0.9rem;
+}
+
+.recipe-source-block h4 {
+    margin-top: 0;
+}
+
+.recipe-source-list {
+    padding-left: 1.2rem;
+}
+
+.recipe-source-list li {
+    margin-bottom: 0.35rem;
+}
+
+@media (max-width: 1024px) {
+    .planner-stats,
+    .meal-macro-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .planner-days {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 768px) {
+    .planner-hero,
+    .planner-toolbar,
+    .planner-filter-top,
+    .planner-day-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .planner-filter-form,
+    .meal-editor-grid,
+    .meal-macro-grid,
+    .planner-stats {
+        grid-template-columns: 1fr;
+    }
+
+    .planner-day-meta {
+        align-items: stretch;
+    }
+
+    .planner-calories {
+        margin-left: 0;
+    }
+
+    .meal-editor-actions {
+        flex-direction: column-reverse;
+    }
+}
+
 @media print {
 
     .dash-header,
