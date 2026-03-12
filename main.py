@@ -1,6 +1,6 @@
 """
 Diet Plan Dashboard — Main Application
-FastAPI + Jinja2 + HTMX
+FastAPI + Jinja2 + HTMX + MongoDB (Motor)
 """
 import os
 import io
@@ -14,6 +14,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse,
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from passlib.hash import bcrypt
+from bson import ObjectId
+from pymongo import ASCENDING, DESCENDING
 
 from database import init_db, get_db
 from ai_service import query_ai, get_all_models
@@ -33,6 +35,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["timedelta"] = timedelta
 templates.env.globals["date"] = date
+templates.env.globals["str"] = str
 
 
 # ──────────────────────── Helpers ────────────────────────
@@ -81,21 +84,23 @@ def parse_user_agent(ua: str) -> dict:
 
 async def log_activity(profile_id, action, details, request: Request):
     db = await get_db()
-    try:
-        ua = request.headers.get("user-agent", "")
-        ua_info = parse_user_agent(ua)
-        fp = request.cookies.get("device_fp", "")
-        ip = request.client.host if request.client else ""
+    ua = request.headers.get("user-agent", "")
+    ua_info = parse_user_agent(ua)
+    fp = request.cookies.get("device_fp", "")
+    ip = request.client.host if request.client else ""
 
-        await db.execute(
-            """INSERT INTO activity_logs 
-               (profile_id, action, details, device_fingerprint, user_agent, os_info, browser_info, device_type, ip_address)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (profile_id, action, details, fp, ua, ua_info["os"], ua_info["browser"], ua_info["device"], ip)
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    await db.activity_logs.insert_one({
+        "profile_id": str(profile_id) if profile_id else None,
+        "action": action,
+        "details": details,
+        "device_fingerprint": fp,
+        "user_agent": ua,
+        "os_info": ua_info["os"],
+        "browser_info": ua_info["browser"],
+        "device_type": ua_info["device"],
+        "ip_address": ip,
+        "created_at": datetime.utcnow()
+    })
 
 
 def get_admin_session(request: Request):
@@ -127,67 +132,69 @@ async def home(request: Request):
 @app.post("/profile/new", response_class=HTMLResponse)
 async def create_profile(request: Request, name: str = Form(...)):
     db = await get_db()
-    try:
-        cursor = await db.execute(
-            "INSERT INTO profiles (name, device_fingerprint) VALUES (?, ?)",
-            (name.strip(), request.cookies.get("device_fp", ""))
-        )
-        profile_id = cursor.lastrowid
-        await db.commit()
+    
+    fp = request.cookies.get("device_fp", "")
+    res = await db.profiles.insert_one({
+        "name": name.strip(),
+        "device_fingerprint": fp,
+        "created_at": datetime.utcnow()
+    })
+    profile_id = str(res.inserted_id)
 
-        # Link device to profile
-        fp = request.cookies.get("device_fp", "")
-        if fp:
-            await db.execute(
-                "INSERT INTO device_profile_map (device_fingerprint, profile_id) VALUES (?, ?)",
-                (fp, profile_id)
-            )
-            await db.commit()
-    finally:
-        await db.close()
+    # Link device to profile
+    if fp:
+        await db.device_profile_map.insert_one({
+            "device_fingerprint": fp,
+            "profile_id": profile_id,
+            "created_at": datetime.utcnow()
+        })
 
     await log_activity(profile_id, "profile_created", f"New profile: {name}", request)
 
     response = RedirectResponse(url="/dashboard", status_code=302)
-    response.set_cookie("profile_id", str(profile_id), max_age=365*24*3600, samesite="lax")
+    response.set_cookie("profile_id", profile_id, max_age=365*24*3600, samesite="lax")
     return response
 
 
 @app.get("/profiles/list", response_class=HTMLResponse)
 async def list_profiles(request: Request):
     db = await get_db()
-    try:
-        cursor = await db.execute("SELECT * FROM profiles ORDER BY name")
-        profiles = await cursor.fetchall()
-    finally:
-        await db.close()
+    profiles = await db.profiles.find().sort("name", ASCENDING).to_list(length=None)
+    
+    # Cast _id to string for the template
+    for p in profiles:
+        p["id"] = str(p["_id"])
+        
     return templates.TemplateResponse("profiles_list.html", {"request": request, "profiles": profiles})
 
 
 @app.post("/profile/select/{profile_id}")
-async def select_profile(request: Request, profile_id: int):
+async def select_profile(request: Request, profile_id: str):
     db = await get_db()
     try:
-        cursor = await db.execute("SELECT * FROM profiles WHERE id = ?", (profile_id,))
-        profile = await cursor.fetchone()
-        if not profile:
-            raise HTTPException(404, "Profile not found")
+        profile = await db.profiles.find_one({"_id": ObjectId(profile_id)})
+    except Exception:
+        raise HTTPException(404, "Invalid Profile ID format")
 
-        # Link device
-        fp = request.cookies.get("device_fp", "")
-        if fp:
-            await db.execute(
-                "INSERT OR IGNORE INTO device_profile_map (device_fingerprint, profile_id) VALUES (?, ?)",
-                (fp, profile_id)
-            )
-            await db.commit()
-    finally:
-        await db.close()
+    if not profile:
+        raise HTTPException(404, "Profile not found")
+
+    # Link device
+    fp = request.cookies.get("device_fp", "")
+    if fp:
+        # Check if exists
+        existing = await db.device_profile_map.find_one({"device_fingerprint": fp, "profile_id": profile_id})
+        if not existing:
+            await db.device_profile_map.insert_one({
+                "device_fingerprint": fp,
+                "profile_id": profile_id,
+                "created_at": datetime.utcnow()
+            })
 
     await log_activity(profile_id, "profile_selected", f"Selected profile: {profile['name']}", request)
 
     response = RedirectResponse(url="/dashboard", status_code=302)
-    response.set_cookie("profile_id", str(profile_id), max_age=365*24*3600, samesite="lax")
+    response.set_cookie("profile_id", profile_id, max_age=365*24*3600, samesite="lax")
     return response
 
 
@@ -207,80 +214,90 @@ async def dashboard(request: Request, view_date: str = None):
         selected_date = today
 
     db = await get_db()
+    
+    # Get profile
     try:
-        # Get profile
-        cursor = await db.execute("SELECT * FROM profiles WHERE id = ?", (int(profile_id),))
-        profile = await cursor.fetchone()
-        if not profile:
-            response = RedirectResponse(url="/", status_code=302)
-            response.delete_cookie("profile_id")
-            return response
+        profile = await db.profiles.find_one({"_id": ObjectId(profile_id)})
+    except Exception:
+        response = RedirectResponse(url="/", status_code=302)
+        response.delete_cookie("profile_id")
+        return response
+        
+    if not profile:
+        response = RedirectResponse(url="/", status_code=302)
+        response.delete_cookie("profile_id")
+        return response
 
-        # If no specific date requested, check if today has meals; if not, find nearest date
-        if not view_date:
-            cursor = await db.execute(
-                "SELECT COUNT(*) FROM meal_plans WHERE plan_date = ? AND (profile_id IS NULL OR profile_id = ?)",
-                (today.isoformat(), int(profile_id))
-            )
-            count = (await cursor.fetchone())[0]
-            if count == 0:
-                # Find nearest date with meals for this user
-                cursor = await db.execute(
-                    """SELECT plan_date FROM meal_plans 
-                       WHERE profile_id IS NULL OR profile_id = ?
-                       ORDER BY ABS(julianday(plan_date) - julianday(?)) ASC 
-                       LIMIT 1""",
-                    (int(profile_id), today.isoformat())
-                )
-                nearest = await cursor.fetchone()
-                if nearest:
-                    selected_date = date.fromisoformat(nearest[0])
+    # If no specific date requested, check if today has meals; if not, find nearest date
+    if not view_date:
+        count = await db.meal_plans.count_documents({
+            "plan_date": today.isoformat(),
+            "$or": [{"profile_id": None}, {"profile_id": profile_id}]
+        })
+        
+        if count == 0:
+            # Find closest date - sort of complex query in Mongo, let's just find the next upcoming one or failing that, most recent past one
+            upcoming = await db.meal_plans.find({
+                "plan_date": {"$gt": today.isoformat()},
+                "$or": [{"profile_id": None}, {"profile_id": profile_id}]
+            }).sort("plan_date", ASCENDING).limit(1).to_list(1)
+            
+            if upcoming:
+                selected_date = date.fromisoformat(upcoming[0]["plan_date"])
+            else:
+                past = await db.meal_plans.find({
+                    "plan_date": {"$lt": today.isoformat()},
+                    "$or": [{"profile_id": None}, {"profile_id": profile_id}]
+                }).sort("plan_date", DESCENDING).limit(1).to_list(1)
+                
+                if past:
+                    selected_date = date.fromisoformat(past[0]["plan_date"])
 
-        # Get meals for the day (user's meals + global meals)
-        cursor = await db.execute(
-            "SELECT * FROM meal_plans WHERE plan_date = ? AND (profile_id IS NULL OR profile_id = ?) ORDER BY meal_type",
-            (selected_date.isoformat(), int(profile_id))
-        )
-        meals = await cursor.fetchall()
+    # Get meals for the day (user's meals + global meals)
+    meals = await db.meal_plans.find({
+        "plan_date": selected_date.isoformat(),
+        "$or": [{"profile_id": None}, {"profile_id": profile_id}]
+    }).to_list(length=None)
 
-        # Get checked meals
-        cursor = await db.execute(
-            "SELECT meal_plan_id FROM meal_checks WHERE profile_id = ? AND is_prepared = 1",
-            (int(profile_id),)
-        )
-        checked_ids = {row[0] for row in await cursor.fetchall()}
+    # Sort meals conceptually based on order array since we lost SQL ORDER BY CASE
+    meals.sort(key=lambda m: MEAL_TYPE_ORDER.index(m["meal_type"]) if m["meal_type"] in MEAL_TYPE_ORDER else 99)
 
-        # Organize meals by type
-        organized = {}
-        for mt in MEAL_TYPE_ORDER:
-            organized[mt] = {
-                "label": MEAL_TYPE_LABELS[mt],
-                "meals": []
-            }
+    # Get checked meals
+    checks = await db.meal_checks.find({
+        "profile_id": profile_id,
+        "is_prepared": 1
+    }).to_list(length=None)
+    checked_ids = {str(c["meal_plan_id"]) for c in checks}
 
-        for meal in meals:
-            mt = meal["meal_type"]
-            if mt in organized:
-                organized[mt]["meals"].append({
-                    "id": meal["id"],
-                    "dish_name": meal["dish_name"],
-                    "description": meal["description"],
-                    "calories": meal["calories"],
-                    "protein_g": meal["protein_g"],
-                    "carbs_g": meal["carbs_g"],
-                    "fat_g": meal["fat_g"],
-                    "fiber_g": meal["fiber_g"],
-                    "is_checked": meal["id"] in checked_ids
-                })
+    # Organize meals by type
+    organized = {}
+    for mt in MEAL_TYPE_ORDER:
+        organized[mt] = {
+            "label": MEAL_TYPE_LABELS[mt],
+            "meals": []
+        }
 
-        # Compute total calories for the day
-        total_cal = sum(m["calories"] for m in meals)
-        checked_cal = sum(m["calories"] for m in meals if m["id"] in checked_ids)
+    for meal in meals:
+        mt = meal["meal_type"]
+        meal_id_str = str(meal["_id"])
+        if mt in organized:
+            organized[mt]["meals"].append({
+                "id": meal_id_str,
+                "dish_name": meal["dish_name"],
+                "description": meal.get("description", ""),
+                "calories": meal.get("calories", 0),
+                "protein_g": meal.get("protein_g", 0),
+                "carbs_g": meal.get("carbs_g", 0),
+                "fat_g": meal.get("fat_g", 0),
+                "fiber_g": meal.get("fiber_g", 0),
+                "is_checked": meal_id_str in checked_ids
+            })
 
-    finally:
-        await db.close()
+    # Compute total calories for the day
+    total_cal = sum(m.get("calories", 0) for m in meals)
+    checked_cal = sum(m.get("calories", 0) for m in meals if str(m["_id"]) in checked_ids)
 
-    await log_activity(int(profile_id), "page_view", f"Dashboard for {selected_date.isoformat()}", request)
+    await log_activity(profile_id, "page_view", f"Dashboard for {selected_date.isoformat()}", request)
 
     # Navigation dates
     prev_date = (selected_date - timedelta(days=1)).isoformat()
@@ -303,71 +320,71 @@ async def dashboard(request: Request, view_date: str = None):
 
 
 @app.post("/meal/toggle/{meal_plan_id}", response_class=HTMLResponse)
-async def toggle_meal(request: Request, meal_plan_id: int):
+async def toggle_meal(request: Request, meal_plan_id: str):
     profile_id = request.cookies.get("profile_id")
     if not profile_id:
         return HTMLResponse("<span>Error</span>", status_code=401)
 
     db = await get_db()
-    try:
-        cursor = await db.execute(
-            "SELECT * FROM meal_checks WHERE profile_id = ? AND meal_plan_id = ?",
-            (int(profile_id), meal_plan_id)
+    
+    existing = await db.meal_checks.find_one({
+        "profile_id": profile_id,
+        "meal_plan_id": meal_plan_id
+    })
+
+    if existing:
+        new_val = 0 if existing.get("is_prepared") else 1
+        await db.meal_checks.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"is_prepared": new_val, "checked_at": datetime.utcnow()}}
         )
-        existing = await cursor.fetchone()
+    else:
+        new_val = 1
+        await db.meal_checks.insert_one({
+            "profile_id": profile_id,
+            "meal_plan_id": meal_plan_id,
+            "is_prepared": 1,
+            "checked_at": datetime.utcnow()
+        })
 
-        if existing:
-            new_val = 0 if existing["is_prepared"] else 1
-            await db.execute(
-                "UPDATE meal_checks SET is_prepared = ?, checked_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (new_val, existing["id"])
-            )
-        else:
-            new_val = 1
-            await db.execute(
-                "INSERT INTO meal_checks (profile_id, meal_plan_id, is_prepared) VALUES (?, ?, 1)",
-                (int(profile_id), meal_plan_id)
-            )
-        await db.commit()
-
-        # Get dish name for logging
-        cursor = await db.execute("SELECT dish_name FROM meal_plans WHERE id = ?", (meal_plan_id,))
-        mp = await cursor.fetchone()
+    # Get dish name for logging
+    try:
+        mp = await db.meal_plans.find_one({"_id": ObjectId(meal_plan_id)})
         dish = mp["dish_name"] if mp else "Unknown"
-    finally:
-        await db.close()
+    except Exception:
+        dish = "Unknown"
 
     action = "meal_prepared" if new_val else "meal_unprepared"
-    await log_activity(int(profile_id), action, dish, request)
+    await log_activity(profile_id, action, dish, request)
 
-    checked = "checked" if new_val else ""
     icon = "✅" if new_val else "⬜"
     return HTMLResponse(f"""<span class="check-icon">{icon}</span>""")
 
 
 @app.get("/dish/info/{meal_plan_id}", response_class=HTMLResponse)
-async def dish_info(request: Request, meal_plan_id: int):
+async def dish_info(request: Request, meal_plan_id: str):
     profile_id = request.cookies.get("profile_id")
 
     db = await get_db()
     try:
-        cursor = await db.execute("SELECT * FROM meal_plans WHERE id = ?", (meal_plan_id,))
-        meal = await cursor.fetchone()
-        if not meal:
-            return HTMLResponse("<p>Dish not found</p>")
-    finally:
-        await db.close()
+        meal = await db.meal_plans.find_one({"_id": ObjectId(meal_plan_id)})
+    except Exception:
+        return HTMLResponse("<p>Invalid Dish ID format</p>")
+        
+    if not meal:
+        return HTMLResponse("<p>Dish not found</p>")
 
     if profile_id:
-        await log_activity(int(profile_id), "dish_viewed", meal["dish_name"], request)
+        await log_activity(profile_id, "dish_viewed", meal["dish_name"], request)
 
     # Query AI
     result = await query_ai(meal["dish_name"])
+    desc = meal.get("description", "")
     return HTMLResponse(f"""
         <div class="dish-detail-content">
             <div class="dish-detail-header">
                 <h2>{meal["dish_name"]}</h2>
-                <p class="dish-description">{meal["description"]}</p>
+                <p class="dish-description">{desc}</p>
             </div>
             <div class="ai-content">
                 {result}
@@ -388,54 +405,52 @@ async def history(request: Request, week_offset: int = 0):
     end_of_week = start_of_week + timedelta(days=6)
 
     db = await get_db()
+    
     try:
-        cursor = await db.execute("SELECT * FROM profiles WHERE id = ?", (int(profile_id),))
-        profile = await cursor.fetchone()
+        profile = await db.profiles.find_one({"_id": ObjectId(profile_id)})
+    except Exception:
+        return RedirectResponse(url="/", status_code=302)
 
-        # Get all meals for the week (user's meals + global meals)
-        cursor = await db.execute(
-            "SELECT * FROM meal_plans WHERE plan_date BETWEEN ? AND ? AND (profile_id IS NULL OR profile_id = ?) ORDER BY plan_date, meal_type",
-            (start_of_week.isoformat(), end_of_week.isoformat(), int(profile_id))
-        )
-        meals = await cursor.fetchall()
+    # Get all meals for the week (user's meals + global meals)
+    meals = await db.meal_plans.find({
+        "plan_date": {"$gte": start_of_week.isoformat(), "$lte": end_of_week.isoformat()},
+        "$or": [{"profile_id": None}, {"profile_id": profile_id}]
+    }).sort([("plan_date", ASCENDING), ("meal_type", ASCENDING)]).to_list(length=None)
 
-        # Get checked meals
-        cursor = await db.execute(
-            "SELECT meal_plan_id FROM meal_checks WHERE profile_id = ? AND is_prepared = 1",
-            (int(profile_id),)
-        )
-        checked_ids = {row[0] for row in await cursor.fetchall()}
+    # Get checked meals
+    checks = await db.meal_checks.find({
+        "profile_id": profile_id,
+        "is_prepared": 1
+    }).to_list(length=None)
+    checked_ids = {str(row["meal_plan_id"]) for row in checks}
 
-        # Organize by day
-        days = {}
-        for i in range(7):
-            d = start_of_week + timedelta(days=i)
-            days[d.isoformat()] = {
-                "date": d,
-                "day_name": d.strftime("%A"),
-                "meals": [],
-                "total": 0,
-                "prepared": 0,
-            }
+    # Organize by day
+    days = {}
+    for i in range(7):
+        d = start_of_week + timedelta(days=i)
+        days[d.isoformat()] = {
+            "date": d,
+            "day_name": d.strftime("%A"),
+            "meals": [],
+            "total": 0,
+            "prepared": 0,
+        }
 
-        for meal in meals:
-            d_key = meal["plan_date"]
-            if d_key in days:
-                is_checked = meal["id"] in checked_ids
-                days[d_key]["meals"].append({
-                    "dish_name": meal["dish_name"],
-                    "meal_type": MEAL_TYPE_LABELS.get(meal["meal_type"], meal["meal_type"]),
-                    "calories": meal["calories"],
-                    "is_checked": is_checked,
-                })
-                days[d_key]["total"] += 1
-                if is_checked:
-                    days[d_key]["prepared"] += 1
+    for meal in meals:
+        d_key = meal["plan_date"]
+        if d_key in days:
+            is_checked = str(meal["_id"]) in checked_ids
+            days[d_key]["meals"].append({
+                "dish_name": meal["dish_name"],
+                "meal_type": MEAL_TYPE_LABELS.get(meal["meal_type"], meal["meal_type"]),
+                "calories": meal.get("calories", 0),
+                "is_checked": is_checked,
+            })
+            days[d_key]["total"] += 1
+            if is_checked:
+                days[d_key]["prepared"] += 1
 
-    finally:
-        await db.close()
-
-    await log_activity(int(profile_id), "history_view", f"Week of {start_of_week.isoformat()}", request)
+    await log_activity(profile_id, "history_view", f"Week of {start_of_week.isoformat()}", request)
 
     return templates.TemplateResponse("history.html", {
         "request": request,
@@ -469,16 +484,13 @@ async def admin_login_page(request: Request):
 @app.post("/admin/login")
 async def admin_login(request: Request, username: str = Form(...), password: str = Form(...)):
     db = await get_db()
-    try:
-        cursor = await db.execute("SELECT * FROM admin WHERE username = ?", (username,))
-        admin = await cursor.fetchone()
-        if not admin or not bcrypt.verify(password, admin["password_hash"]):
-            return templates.TemplateResponse("admin_login.html", {
-                "request": request,
-                "error": "Invalid credentials"
-            })
-    finally:
-        await db.close()
+    
+    admin = await db.admin.find_one({"username": username})
+    if not admin or not bcrypt.verify(password, admin["password_hash"]):
+        return templates.TemplateResponse("admin_login.html", {
+            "request": request,
+            "error": "Invalid credentials"
+        })
 
     response = RedirectResponse(url="/admin", status_code=302)
     response.set_cookie("admin_session", "authenticated", max_age=8*3600, httponly=True, samesite="lax")
@@ -498,35 +510,30 @@ async def admin_dashboard(request: Request):
         return RedirectResponse(url="/admin/login", status_code=302)
 
     db = await get_db()
-    try:
-        # Stats
-        cursor = await db.execute("SELECT COUNT(*) FROM profiles")
-        total_users = (await cursor.fetchone())[0]
+    
+    # Stats
+    total_users = await db.profiles.count_documents({})
+    total_meals = await db.meal_plans.count_documents({})
+    total_days = len(await db.meal_plans.distinct("plan_date"))
 
-        cursor = await db.execute("SELECT COUNT(*) FROM meal_plans")
-        total_meals = (await cursor.fetchone())[0]
+    # Recent activity - Needs a manual lookup join equivalent since MongoDB doesn't easily JOIN outside of aggregations
+    recent_acts = await db.activity_logs.find().sort("created_at", DESCENDING).limit(50).to_list(50)
+    
+    # Pre-fetch profiles for mapping
+    all_profiles = await db.profiles.find().sort("name", ASCENDING).to_list(length=None)
+    profile_map = {str(p["_id"]): p["name"] for p in all_profiles}
+    
+    # Attach profile_name manually
+    activities = []
+    for act in recent_acts:
+        act["profile_name"] = profile_map.get(str(act.get("profile_id")), "Unknown Profile")
+        activities.append(act)
+        
+    for p in all_profiles:
+        p["id"] = str(p["_id"])
 
-        cursor = await db.execute("SELECT COUNT(DISTINCT plan_date) FROM meal_plans")
-        total_days = (await cursor.fetchone())[0]
-
-        # Recent activity
-        cursor = await db.execute("""
-            SELECT al.*, p.name as profile_name 
-            FROM activity_logs al 
-            LEFT JOIN profiles p ON al.profile_id = p.id 
-            ORDER BY al.created_at DESC LIMIT 50
-        """)
-        activities = await cursor.fetchall()
-
-        # All profiles
-        cursor = await db.execute("SELECT * FROM profiles ORDER BY name")
-        profiles = await cursor.fetchall()
-
-        # AI Models
-        models = await get_all_models()
-
-    finally:
-        await db.close()
+    # AI Models
+    models = await get_all_models()
 
     return templates.TemplateResponse("admin_dashboard.html", {
         "request": request,
@@ -534,7 +541,7 @@ async def admin_dashboard(request: Request):
         "total_meals": total_meals,
         "total_days": total_days,
         "activities": activities,
-        "profiles": profiles,
+        "profiles": all_profiles,
         "models": models,
     })
 
@@ -617,49 +624,47 @@ async def upload_meals(request: Request, file: UploadFile = File(...)):
         """)
 
     valid_types = {'breakfast', 'morning_snack', 'lunch', 'afternoon_snack', 'dinner', 'evening_snack'}
-    inserted = 0
-
+    
     db = await get_db()
-    try:
-        for i, row in enumerate(rows, 2):
-            try:
-                plan_date = str(row.get("plan_date", "")).strip()
-                meal_type = str(row.get("meal_type", "")).strip().lower()
-                dish_name = str(row.get("dish_name", "")).strip()
+    docs_to_insert = []
+    
+    for i, row in enumerate(rows, 2):
+        try:
+            plan_date = str(row.get("plan_date", "")).strip()
+            meal_type = str(row.get("meal_type", "")).strip().lower()
+            dish_name = str(row.get("dish_name", "")).strip()
 
-                if not plan_date or not meal_type or not dish_name:
-                    errors.append(f"Row {i}: Missing required fields")
-                    continue
+            if not plan_date or not meal_type or not dish_name:
+                errors.append(f"Row {i}: Missing required fields")
+                continue
 
-                if meal_type not in valid_types:
-                    errors.append(f"Row {i}: Invalid meal_type '{meal_type}'")
-                    continue
+            if meal_type not in valid_types:
+                errors.append(f"Row {i}: Invalid meal_type '{meal_type}'")
+                continue
 
-                # Validate date
-                date.fromisoformat(plan_date)
+            # Validate date
+            date.fromisoformat(plan_date)
 
-                await db.execute(
-                    """INSERT INTO meal_plans (plan_date, meal_type, dish_name, description, calories, protein_g, carbs_g, fat_g, fiber_g)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        plan_date,
-                        meal_type,
-                        dish_name,
-                        str(row.get("description", "")).strip(),
-                        int(float(row.get("calories", 0) or 0)),
-                        float(row.get("protein_g", 0) or 0),
-                        float(row.get("carbs_g", 0) or 0),
-                        float(row.get("fat_g", 0) or 0),
-                        float(row.get("fiber_g", 0) or 0),
-                    )
-                )
-                inserted += 1
-            except Exception as e:
-                errors.append(f"Row {i}: {str(e)}")
+            docs_to_insert.append({
+                "plan_date": plan_date,
+                "meal_type": meal_type,
+                "dish_name": dish_name,
+                "description": str(row.get("description", "")).strip(),
+                "calories": int(float(row.get("calories", 0) or 0)),
+                "protein_g": float(row.get("protein_g", 0) or 0),
+                "carbs_g": float(row.get("carbs_g", 0) or 0),
+                "fat_g": float(row.get("fat_g", 0) or 0),
+                "fiber_g": float(row.get("fiber_g", 0) or 0),
+                "profile_id": None,
+                "created_at": datetime.utcnow()
+            })
+        except Exception as e:
+            errors.append(f"Row {i}: {str(e)}")
 
-        await db.commit()
-    finally:
-        await db.close()
+    inserted = 0
+    if docs_to_insert:
+        res = await db.meal_plans.insert_many(docs_to_insert)
+        inserted = len(res.inserted_ids)
 
     error_html = ""
     if errors:
@@ -684,35 +689,32 @@ async def admin_meals(request: Request, week_offset: int = 0, view_all: int = 0)
     today = date.today()
 
     db = await get_db()
-    try:
-        if view_all:
-            cursor = await db.execute("SELECT COUNT(*) FROM meal_plans")
-            total = (await cursor.fetchone())[0]
-            cursor = await db.execute(
-                "SELECT mp.*, p.name as assigned_to FROM meal_plans mp LEFT JOIN profiles p ON mp.profile_id = p.id ORDER BY plan_date ASC, meal_type"
-            )
-            meals = await cursor.fetchall()
-            week_start = None
-            week_end = None
-        else:
-            week_start = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
-            week_end = week_start + timedelta(days=6)
-            cursor = await db.execute(
-                "SELECT COUNT(*) FROM meal_plans WHERE plan_date BETWEEN ? AND ?",
-                (week_start.isoformat(), week_end.isoformat())
-            )
-            total = (await cursor.fetchone())[0]
-            cursor = await db.execute(
-                "SELECT mp.*, p.name as assigned_to FROM meal_plans mp LEFT JOIN profiles p ON mp.profile_id = p.id WHERE plan_date BETWEEN ? AND ? ORDER BY plan_date ASC, meal_type",
-                (week_start.isoformat(), week_end.isoformat())
-            )
-            meals = await cursor.fetchall()
+    
+    # Pre-fetch profiles for joining
+    all_profiles = await db.profiles.find().sort("name", ASCENDING).to_list(length=None)
+    profile_map = {str(p["_id"]): p["name"] for p in all_profiles}
+    
+    if view_all:
+        total = await db.meal_plans.count_documents({})
+        raw_meals = await db.meal_plans.find().sort([("plan_date", ASCENDING), ("meal_type", ASCENDING)]).to_list(length=None)
+        week_start = None
+        week_end = None
+    else:
+        week_start = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
+        week_end = week_start + timedelta(days=6)
+        query = {"plan_date": {"$gte": week_start.isoformat(), "$lte": week_end.isoformat()}}
+        total = await db.meal_plans.count_documents(query)
+        raw_meals = await db.meal_plans.find(query).sort([("plan_date", ASCENDING), ("meal_type", ASCENDING)]).to_list(length=None)
 
-        # Get all profiles for assignment dropdown
-        cursor = await db.execute("SELECT id, name FROM profiles ORDER BY name")
-        profiles = await cursor.fetchall()
-    finally:
-        await db.close()
+    # Attach names AND format ids
+    meals = []
+    for m in raw_meals:
+        m["id"] = str(m["_id"])
+        m["assigned_to"] = profile_map.get(str(m.get("profile_id"))) if m.get("profile_id") else None
+        meals.append(m)
+        
+    for p in all_profiles:
+        p["id"] = str(p["_id"])
 
     return templates.TemplateResponse("admin_meals.html", {
         "request": request,
@@ -725,22 +727,21 @@ async def admin_meals(request: Request, week_offset: int = 0, view_all: int = 0)
         "today": today,
         "meal_type_labels": MEAL_TYPE_LABELS,
         "meal_type_order": MEAL_TYPE_ORDER,
-        "profiles": profiles,
+        "profiles": all_profiles,
     })
 
 
 @app.delete("/admin/meal/{meal_id}", response_class=HTMLResponse)
-async def delete_meal(request: Request, meal_id: int):
+async def delete_meal(request: Request, meal_id: str):
     if not get_admin_session(request):
         return HTMLResponse("Unauthorized", status_code=401)
 
     db = await get_db()
+    await db.meal_checks.delete_many({"meal_plan_id": meal_id})
     try:
-        await db.execute("DELETE FROM meal_checks WHERE meal_plan_id = ?", (meal_id,))
-        await db.execute("DELETE FROM meal_plans WHERE id = ?", (meal_id,))
-        await db.commit()
-    finally:
-        await db.close()
+        await db.meal_plans.delete_one({"_id": ObjectId(meal_id)})
+    except Exception:
+        pass # Invalid ID format, ignores block
 
     return HTMLResponse("")
 
@@ -751,20 +752,18 @@ async def clear_week(request: Request, week_start: str = Query(...), week_end: s
         return HTMLResponse("Unauthorized", status_code=401)
 
     db = await get_db()
-    try:
-        # Delete associated meal checks first
-        await db.execute(
-            "DELETE FROM meal_checks WHERE meal_plan_id IN (SELECT id FROM meal_plans WHERE plan_date BETWEEN ? AND ?)",
-            (week_start, week_end)
-        )
-        cursor = await db.execute(
-            "DELETE FROM meal_plans WHERE plan_date BETWEEN ? AND ?",
-            (week_start, week_end)
-        )
-        deleted = cursor.rowcount
-        await db.commit()
-    finally:
-        await db.close()
+    
+    query = {"plan_date": {"$gte": week_start, "$lte": week_end}}
+    
+    # Delete associated meal checks first
+    meals_to_delete = await db.meal_plans.find(query, {"_id": 1}).to_list(length=None)
+    meal_ids = [str(m["_id"]) for m in meals_to_delete]
+    
+    if meal_ids:
+        await db.meal_checks.delete_many({"meal_plan_id": {"$in": meal_ids}})
+        
+    res = await db.meal_plans.delete_many(query)
+    deleted = res.deleted_count
 
     return HTMLResponse(f'''
         <div class="upload-result success">
@@ -780,41 +779,38 @@ async def add_meal_manual(request: Request, plan_date: str = Form(...), meal_typ
                           dish_name: str = Form(...), description: str = Form(""),
                           calories: int = Form(0), protein_g: float = Form(0),
                           carbs_g: float = Form(0), fat_g: float = Form(0), fiber_g: float = Form(0),
-                          profile_id: int = Form(0)):
+                          profile_id: str = Form("0")):
     if not get_admin_session(request):
         return HTMLResponse("Unauthorized", status_code=401)
 
-    pid = profile_id if profile_id > 0 else None
+    pid = profile_id if profile_id and profile_id != "0" else None
 
     db = await get_db()
-    try:
-        cursor = await db.execute(
-            """INSERT INTO meal_plans (plan_date, meal_type, dish_name, description, calories, protein_g, carbs_g, fat_g, fiber_g, profile_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (plan_date, meal_type, dish_name.strip(), description.strip(), calories, protein_g, carbs_g, fat_g, fiber_g, pid)
-        )
-        new_id = cursor.lastrowid
-        await db.commit()
+    
+    res = await db.meal_plans.insert_one({
+        "plan_date": plan_date,
+        "meal_type": meal_type,
+        "dish_name": dish_name.strip(),
+        "description": description.strip(),
+        "calories": calories,
+        "protein_g": protein_g,
+        "carbs_g": carbs_g,
+        "fat_g": fat_g,
+        "fiber_g": fiber_g,
+        "profile_id": pid,
+        "created_at": datetime.utcnow()
+    })
+    new_id = str(res.inserted_id)
 
-        # Get assigned name
-        assigned_name = "Everyone"
-        if pid:
-            c2 = await db.execute("SELECT name FROM profiles WHERE id = ?", (pid,))
-            p = await c2.fetchone()
-            if p:
-                assigned_name = p["name"]
-
-        # Get all profiles for dropdown
-        cursor = await db.execute("SELECT id, name FROM profiles ORDER BY name")
-        profiles = await cursor.fetchall()
-    finally:
-        await db.close()
-
+    # Get all profiles for dropdown
+    all_profiles = await db.meal_plans.database.profiles.find().sort("name", ASCENDING).to_list(length=None)
+    
     # Build profile options
     profile_opts = '<option value="0"' + (' selected' if not pid else '') + '>👥 Everyone</option>'
-    for p in profiles:
-        sel = ' selected' if p['id'] == pid else ''
-        profile_opts += f'<option value="{p["id"]}"{sel}>{p["name"]}</option>'
+    for p in all_profiles:
+        p_id_str = str(p["_id"])
+        sel = ' selected' if p_id_str == pid else ''
+        profile_opts += f'<option value="{p_id_str}"{sel}>{p["name"]}</option>'
 
     return HTMLResponse(f"""
         <tr id="meal-row-{new_id}" class="new-row-flash">
@@ -856,7 +852,7 @@ async def add_meal_manual(request: Request, plan_date: str = Form(...), meal_typ
                 </select>
             </td>
             <td class="actions-cell">
-                <button class="btn btn-sm btn-copy" onclick="openCopyModal({new_id}, '{dish_name}')">📋</button>
+                <button class="btn btn-sm btn-copy" onclick="openCopyModal('{new_id}', '{dish_name}')">📋</button>
                 <button class="btn btn-sm btn-danger"
                         hx-delete="/admin/meal/{new_id}"
                         hx-target="#meal-row-{new_id}"
@@ -868,58 +864,60 @@ async def add_meal_manual(request: Request, plan_date: str = Form(...), meal_typ
 
 
 @app.post("/admin/meal/{meal_id}/edit", response_class=HTMLResponse)
-async def edit_meal(request: Request, meal_id: int,
+async def edit_meal(request: Request, meal_id: str,
                     plan_date: str = Form(...), meal_type: str = Form(...),
                     dish_name: str = Form(...), calories: int = Form(0),
                     protein_g: float = Form(0), carbs_g: float = Form(0), fat_g: float = Form(0),
-                    profile_id: int = Form(0)):
+                    profile_id: str = Form("0")):
     if not get_admin_session(request):
         return HTMLResponse("Unauthorized", status_code=401)
 
-    pid = profile_id if profile_id > 0 else None
+    pid = profile_id if profile_id and profile_id != "0" else None
 
     db = await get_db()
     try:
-        await db.execute(
-            """UPDATE meal_plans SET plan_date = ?, meal_type = ?, dish_name = ?, 
-               calories = ?, protein_g = ?, carbs_g = ?, fat_g = ?, profile_id = ?
-               WHERE id = ?""",
-            (plan_date, meal_type, dish_name.strip(), calories, protein_g, carbs_g, fat_g, pid, meal_id)
+        await db.meal_plans.update_one(
+            {"_id": ObjectId(meal_id)},
+            {"$set": {
+                "plan_date": plan_date,
+                "meal_type": meal_type,
+                "dish_name": dish_name.strip(),
+                "calories": calories,
+                "protein_g": protein_g,
+                "carbs_g": carbs_g,
+                "fat_g": fat_g,
+                "profile_id": pid
+            }}
         )
-        await db.commit()
-        cursor = await db.execute(
-            "SELECT mp.*, p.name as assigned_to FROM meal_plans mp LEFT JOIN profiles p ON mp.profile_id = p.id WHERE mp.id = ?",
-            (meal_id,)
-        )
-        meal = await cursor.fetchone()
-
-        # Get profiles for dropdown
-        cursor = await db.execute("SELECT id, name FROM profiles ORDER BY name")
-        profiles = await cursor.fetchall()
-    finally:
-        await db.close()
-
-    if not meal:
+        meal_doc = await db.meal_plans.find_one({"_id": ObjectId(meal_id)})
+    except Exception:
         return HTMLResponse("")
 
-    mt = meal["meal_type"]
-    mpid = meal["profile_id"]
+    if not meal_doc:
+        return HTMLResponse("")
 
-    profile_opts = '<option value="0"' + (' selected' if not mpid else '') + '>👥 Everyone</option>'
-    for p in profiles:
-        sel = ' selected' if p['id'] == mpid else ''
-        profile_opts += f'<option value="{p["id"]}"{sel}>{p["name"]}</option>'
+    # Get profiles for dropdown
+    all_profiles = await db.profiles.find().sort("name", ASCENDING).to_list(length=None)
+
+    mt = meal_doc["meal_type"]
+    mpid = str(meal_doc.get("profile_id", "0"))
+
+    profile_opts = '<option value="0"' + (' selected' if mpid == "0" or mpid == "None" else '') + '>👥 Everyone</option>'
+    for p in all_profiles:
+        p_id_str = str(p["_id"])
+        sel = ' selected' if p_id_str == mpid else ''
+        profile_opts += f'<option value="{p_id_str}"{sel}>{p["name"]}</option>'
 
     return HTMLResponse(f"""
-        <tr id="meal-row-{meal['id']}">
+        <tr id="meal-row-{meal_id}">
             <td>
-                <input type="date" value="{meal['plan_date']}" class="inline-input"
-                       hx-post="/admin/meal/{meal['id']}/edit" hx-include="closest tr" hx-target="#meal-row-{meal['id']}" hx-swap="outerHTML"
+                <input type="date" value="{meal_doc['plan_date']}" class="inline-input"
+                       hx-post="/admin/meal/{meal_id}/edit" hx-include="closest tr" hx-target="#meal-row-{meal_id}" hx-swap="outerHTML"
                        name="plan_date">
             </td>
             <td>
                 <select class="inline-input" name="meal_type"
-                        hx-post="/admin/meal/{meal['id']}/edit" hx-include="closest tr" hx-target="#meal-row-{meal['id']}" hx-swap="outerHTML">
+                        hx-post="/admin/meal/{meal_id}/edit" hx-include="closest tr" hx-target="#meal-row-{meal_id}" hx-swap="outerHTML">
                     <option value="breakfast" {"selected" if mt == "breakfast" else ""}>🌅 Breakfast</option>
                     <option value="morning_snack" {"selected" if mt == "morning_snack" else ""}>🍎 Morning Snack</option>
                     <option value="lunch" {"selected" if mt == "lunch" else ""}>☀️ Lunch</option>
@@ -929,31 +927,31 @@ async def edit_meal(request: Request, meal_id: int,
                 </select>
             </td>
             <td>
-                <input type="text" value="{meal['dish_name']}" class="inline-input inline-name" name="dish_name"
-                       hx-post="/admin/meal/{meal['id']}/edit" hx-include="closest tr" hx-target="#meal-row-{meal['id']}" hx-swap="outerHTML"
+                <input type="text" value="{meal_doc['dish_name']}" class="inline-input inline-name" name="dish_name"
+                       hx-post="/admin/meal/{meal_id}/edit" hx-include="closest tr" hx-target="#meal-row-{meal_id}" hx-swap="outerHTML"
                        hx-trigger="change">
             </td>
             <td>
-                <input type="number" value="{meal['calories']}" class="inline-input inline-num" name="calories"
-                       hx-post="/admin/meal/{meal['id']}/edit" hx-include="closest tr" hx-target="#meal-row-{meal['id']}" hx-swap="outerHTML"
+                <input type="number" value="{meal_doc.get('calories', 0)}" class="inline-input inline-num" name="calories"
+                       hx-post="/admin/meal/{meal_id}/edit" hx-include="closest tr" hx-target="#meal-row-{meal_id}" hx-swap="outerHTML"
                        hx-trigger="change">
             </td>
             <td class="macros-cell">
-                <input type="number" value="{meal['protein_g']}" class="inline-input inline-micro" name="protein_g" step="0.1" hx-post="/admin/meal/{meal['id']}/edit" hx-include="closest tr" hx-target="#meal-row-{meal['id']}" hx-swap="outerHTML" hx-trigger="change">
-                <input type="number" value="{meal['carbs_g']}" class="inline-input inline-micro" name="carbs_g" step="0.1" hx-post="/admin/meal/{meal['id']}/edit" hx-include="closest tr" hx-target="#meal-row-{meal['id']}" hx-swap="outerHTML" hx-trigger="change">
-                <input type="number" value="{meal['fat_g']}" class="inline-input inline-micro" name="fat_g" step="0.1" hx-post="/admin/meal/{meal['id']}/edit" hx-include="closest tr" hx-target="#meal-row-{meal['id']}" hx-swap="outerHTML" hx-trigger="change">
+                <input type="number" value="{meal_doc.get('protein_g', 0)}" class="inline-input inline-micro" name="protein_g" step="0.1" hx-post="/admin/meal/{meal_id}/edit" hx-include="closest tr" hx-target="#meal-row-{meal_id}" hx-swap="outerHTML" hx-trigger="change">
+                <input type="number" value="{meal_doc.get('carbs_g', 0)}" class="inline-input inline-micro" name="carbs_g" step="0.1" hx-post="/admin/meal/{meal_id}/edit" hx-include="closest tr" hx-target="#meal-row-{meal_id}" hx-swap="outerHTML" hx-trigger="change">
+                <input type="number" value="{meal_doc.get('fat_g', 0)}" class="inline-input inline-micro" name="fat_g" step="0.1" hx-post="/admin/meal/{meal_id}/edit" hx-include="closest tr" hx-target="#meal-row-{meal_id}" hx-swap="outerHTML" hx-trigger="change">
             </td>
             <td>
                 <select class="inline-input inline-assign" name="profile_id"
-                        hx-post="/admin/meal/{meal['id']}/edit" hx-include="closest tr" hx-target="#meal-row-{meal['id']}" hx-swap="outerHTML">
+                        hx-post="/admin/meal/{meal_id}/edit" hx-include="closest tr" hx-target="#meal-row-{meal_id}" hx-swap="outerHTML">
                     {profile_opts}
                 </select>
             </td>
             <td class="actions-cell">
-                <button class="btn btn-sm btn-copy" onclick="openCopyModal({meal['id']}, '{meal['dish_name']}')">📋</button>
+                <button class="btn btn-sm btn-copy" onclick="openCopyModal('{meal_id}', '{meal_doc['dish_name']}')">📋</button>
                 <button class="btn btn-sm btn-danger"
-                        hx-delete="/admin/meal/{meal['id']}"
-                        hx-target="#meal-row-{meal['id']}"
+                        hx-delete="/admin/meal/{meal_id}"
+                        hx-target="#meal-row-{meal_id}"
                         hx-swap="outerHTML"
                         hx-confirm="Delete this meal?">🗑️</button>
             </td>
@@ -962,26 +960,31 @@ async def edit_meal(request: Request, meal_id: int,
 
 
 @app.post("/admin/meal/{meal_id}/copy", response_class=HTMLResponse)
-async def copy_meal(request: Request, meal_id: int, target_date: str = Form(...)):
+async def copy_meal(request: Request, meal_id: str, target_date: str = Form(...)):
     if not get_admin_session(request):
         return HTMLResponse("Unauthorized", status_code=401)
 
     db = await get_db()
     try:
-        cursor = await db.execute("SELECT * FROM meal_plans WHERE id = ?", (meal_id,))
-        meal = await cursor.fetchone()
+        meal = await db.meal_plans.find_one({"_id": ObjectId(meal_id)})
         if not meal:
             return HTMLResponse('<div class="upload-result error"><span class="icon">❌</span><p>Meal not found.</p></div>')
 
-        await db.execute(
-            """INSERT INTO meal_plans (plan_date, meal_type, dish_name, description, calories, protein_g, carbs_g, fat_g, fiber_g, profile_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (target_date, meal["meal_type"], meal["dish_name"], meal["description"],
-             meal["calories"], meal["protein_g"], meal["carbs_g"], meal["fat_g"], meal["fiber_g"], meal["profile_id"])
-        )
-        await db.commit()
-    finally:
-        await db.close()
+        await db.meal_plans.insert_one({
+            "plan_date": target_date,
+            "meal_type": meal["meal_type"],
+            "dish_name": meal["dish_name"],
+            "description": meal.get("description", ""),
+            "calories": meal.get("calories", 0),
+            "protein_g": meal.get("protein_g", 0),
+            "carbs_g": meal.get("carbs_g", 0),
+            "fat_g": meal.get("fat_g", 0),
+            "fiber_g": meal.get("fiber_g", 0),
+            "profile_id": meal.get("profile_id"),
+            "created_at": datetime.utcnow()
+        })
+    except Exception:
+        return HTMLResponse('<div class="upload-result error"><span class="icon">❌</span><p>Error copying meal.</p></div>')
 
     return HTMLResponse(f'''
         <div class="upload-result success">
@@ -998,51 +1001,49 @@ async def add_model(request: Request, provider: str = Form(...), model_id: str =
         return HTMLResponse("Unauthorized", status_code=401)
 
     db = await get_db()
-    try:
-        await db.execute(
-            "INSERT INTO ai_models (provider, model_id, display_name, api_key) VALUES (?, ?, ?, ?)",
-            (provider, model_id.strip(), display_name.strip(), api_key.strip())
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    await db.ai_models.insert_one({
+        "provider": provider,
+        "model_id": model_id.strip(),
+        "display_name": display_name.strip(),
+        "api_key": api_key.strip(),
+        "is_default": 0,
+        "created_at": datetime.utcnow()
+    })
 
     return RedirectResponse(url="/admin#models", status_code=302)
 
 
-@app.delete("/admin/model/{model_id_int}", response_class=HTMLResponse)
-async def delete_model(request: Request, model_id_int: int):
+@app.delete("/admin/model/{model_id_str}", response_class=HTMLResponse)
+async def delete_model(request: Request, model_id_str: str):
     if not get_admin_session(request):
         return HTMLResponse("Unauthorized", status_code=401)
 
     db = await get_db()
     try:
-        await db.execute("DELETE FROM ai_models WHERE id = ?", (model_id_int,))
-        await db.commit()
-    finally:
-        await db.close()
+        await db.ai_models.delete_one({"_id": ObjectId(model_id_str)})
+    except Exception:
+        pass
 
     return HTMLResponse("")
 
 
-@app.post("/admin/model/default/{model_id_int}", response_class=HTMLResponse)
-async def set_default_model(request: Request, model_id_int: int):
+@app.post("/admin/model/default/{model_id_str}", response_class=HTMLResponse)
+async def set_default_model(request: Request, model_id_str: str):
     if not get_admin_session(request):
         return HTMLResponse("Unauthorized", status_code=401)
 
     db = await get_db()
     try:
-        await db.execute("UPDATE ai_models SET is_default = 0")
-        await db.execute("UPDATE ai_models SET is_default = 1 WHERE id = ?", (model_id_int,))
-        await db.commit()
-    finally:
-        await db.close()
+        await db.ai_models.update_many({}, {"$set": {"is_default": 0}})
+        await db.ai_models.update_one({"_id": ObjectId(model_id_str)}, {"$set": {"is_default": 1}})
+    except Exception:
+        pass
 
     return RedirectResponse(url="/admin#models", status_code=302)
 
 
 @app.get("/admin/activity", response_class=HTMLResponse)
-async def admin_activity(request: Request, profile_filter: int = 0, page: int = 1):
+async def admin_activity(request: Request, profile_filter: str = "0", page: int = 1):
     if not get_admin_session(request):
         return RedirectResponse(url="/admin/login", status_code=302)
 
@@ -1050,33 +1051,30 @@ async def admin_activity(request: Request, profile_filter: int = 0, page: int = 
     offset = (page - 1) * per_page
 
     db = await get_db()
-    try:
-        if profile_filter:
-            cursor = await db.execute(
-                """SELECT al.*, p.name as profile_name 
-                   FROM activity_logs al LEFT JOIN profiles p ON al.profile_id = p.id 
-                   WHERE al.profile_id = ?
-                   ORDER BY al.created_at DESC LIMIT ? OFFSET ?""",
-                (profile_filter, per_page, offset)
-            )
-        else:
-            cursor = await db.execute(
-                """SELECT al.*, p.name as profile_name 
-                   FROM activity_logs al LEFT JOIN profiles p ON al.profile_id = p.id 
-                   ORDER BY al.created_at DESC LIMIT ? OFFSET ?""",
-                (per_page, offset)
-            )
-        activities = await cursor.fetchall()
+    
+    # Needs a manual lookup join equivalent since MongoDB doesn't easily JOIN outside of aggregations
+    all_profiles = await db.profiles.find().sort("name", ASCENDING).to_list(length=None)
+    profile_map = {str(p["_id"]): p["name"] for p in all_profiles}
 
-        cursor = await db.execute("SELECT id, name FROM profiles ORDER BY name")
-        profiles = await cursor.fetchall()
-    finally:
-        await db.close()
+    query = {}
+    if profile_filter and profile_filter != "0":
+        query["profile_id"] = profile_filter
+
+    recent_acts = await db.activity_logs.find(query).sort("created_at", DESCENDING).skip(offset).limit(per_page).to_list(None)
+    
+    # Attach profile_name manually
+    activities = []
+    for act in recent_acts:
+        act["profile_name"] = profile_map.get(str(act.get("profile_id")), "Unknown Profile")
+        activities.append(act)
+        
+    for p in all_profiles:
+        p["id"] = str(p["_id"])
 
     return templates.TemplateResponse("admin_activity.html", {
         "request": request,
         "activities": activities,
-        "profiles": profiles,
+        "profiles": all_profiles,
         "profile_filter": profile_filter,
         "page": page,
     })
@@ -1088,16 +1086,12 @@ async def change_admin_password(request: Request, current_password: str = Form(.
         return HTMLResponse("Unauthorized", status_code=401)
 
     db = await get_db()
-    try:
-        cursor = await db.execute("SELECT * FROM admin LIMIT 1")
-        admin = await cursor.fetchone()
-        if not bcrypt.verify(current_password, admin["password_hash"]):
-            return HTMLResponse("""<div class="upload-result error"><span class="icon">❌</span><p>Current password incorrect.</p></div>""")
-        
-        new_hash = bcrypt.hash(new_password)
-        await db.execute("UPDATE admin SET password_hash = ? WHERE id = ?", (new_hash, admin["id"]))
-        await db.commit()
-    finally:
-        await db.close()
+    admin = await db.admin.find_one({})
+    
+    if not bcrypt.verify(current_password, admin["password_hash"]):
+        return HTMLResponse("""<div class="upload-result error"><span class="icon">❌</span><p>Current password incorrect.</p></div>""")
+    
+    new_hash = bcrypt.hash(new_password)
+    await db.admin.update_one({"_id": admin["_id"]}, {"$set": {"password_hash": new_hash}})
 
     return HTMLResponse("""<div class="upload-result success"><span class="icon">✅</span><p>Password updated successfully.</p></div>""")

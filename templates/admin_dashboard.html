@@ -205,7 +205,7 @@
                     <div class="model-card {% if model.is_default %}model-default{% endif %}" id="model-{{ model.id }}">
                         <div class="model-header">
                             <span
-                                class="model-provider {% if model.provider == 'groq' %}provider-groq{% else %}provider-openrouter{% endif %}">
+                                class="model-provider {% if model.provider == 'groq' %}provider-groq{% elif model.provider == 'gemini' %}provider-gemini{% else %}provider-openrouter{% endif %}">
                                 {{ model.provider | upper }}
                             </span>
                             {% if model.is_default %}
@@ -239,6 +239,7 @@
                             <select name="provider" class="input-field" required>
                                 <option value="groq">Groq</option>
                                 <option value="openrouter">OpenRouter</option>
+                                <option value="gemini">Gemini</option>
                             </select>
                             <label class="input-label">Provider</label>
                         </div>
@@ -303,8 +304,12 @@
                         <span>Your OpenRouter API key</span>
                     </div>
                     <div class="env-item">
-                        <code>DB_PATH</code>
-                        <span>Database file path (default: dietplan.db)</span>
+                        <code>GEMINI_API_KEY</code>
+                        <span>Your Gemini API key</span>
+                    </div>
+                    <div class="env-item">
+                        <code>MONGO_URI</code>
+                        <span>MongoDB Atlas Connection Array</span>
                     </div>
                 </div>
             </div>
