@@ -235,7 +235,7 @@
                             </td>
                             <td class="actions-cell">
                                 <button class="btn btn-sm btn-copy"
-                                    onclick="openCopyModal({{ meal.id }}, '{{ meal.dish_name | replace(chr(39), chr(92)+chr(39)) }}')"
+                                    onclick="openCopyModal({{ meal.id }}, '{{ meal.dish_name | tojson | safe }}')"
                                     title="Copy to another day">📋</button>
                                 <button class="btn btn-sm btn-danger" hx-delete="/admin/meal/{{ meal.id }}"
                                     hx-target="#meal-row-{{ meal.id }}" hx-swap="outerHTML"
@@ -247,12 +247,27 @@
                 </table>
             </div>
             {% else %}
+            <div class="table-responsive">
+                <table class="admin-table editable-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Type</th>
+                            <th>Dish Name</th>
+                            <th>Cal</th>
+                            <th>P / C / F</th>
+                            <th>Assigned To</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="meals-tbody"></tbody>
+                </table>
+            </div>
             <div class="empty-state" id="meals-empty">
                 <span class="empty-icon">🍽️</span>
                 <h3>No meals for this week</h3>
                 <p>Add meals using the form above or upload a CSV.</p>
             </div>
-            <tbody id="meals-tbody" style="display:none;"></tbody>
             {% endif %}
         </div>
     </main>
@@ -299,10 +314,15 @@
     }
 
     function toggleAddForm() {
+        console.log('toggleAddForm called');
         const form = document.getElementById('add-meal-form');
         const toggle = document.getElementById('add-toggle');
-        form.classList.toggle('hidden');
-        toggle.textContent = form.classList.contains('hidden') ? '▼' : '▲';
+        if (form && toggle) {
+            form.classList.toggle('hidden');
+            toggle.textContent = form.classList.contains('hidden') ? '▼' : '▲';
+        } else {
+            console.error('Form or toggle not found');
+        }
     }
 
     function openCopyModal(mealId, dishName) {

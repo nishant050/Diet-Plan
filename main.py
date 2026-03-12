@@ -532,20 +532,20 @@ async def admin_dashboard(request: Request):
     for p in all_profiles:
         p["id"] = str(p["_id"])
 
-     # AI Models
-     models = await get_all_models()
-     for model in models:
-         model["id"] = str(model["_id"])
+    # AI Models
+    models = await get_all_models()
+    for model in models:
+        model["id"] = str(model["_id"])
 
-     return templates.TemplateResponse("admin_dashboard.html", {
-         "request": request,
-         "total_users": total_users,
-         "total_meals": total_meals,
-         "total_days": total_days,
-         "activities": activities,
-         "profiles": all_profiles,
-         "models": models,
-     })
+    return templates.TemplateResponse("admin_dashboard.html", {
+        "request": request,
+        "total_users": total_users,
+        "total_meals": total_meals,
+        "total_days": total_days,
+        "activities": activities,
+        "profiles": all_profiles,
+        "models": models,
+    })
 
 
 @app.get("/admin/template/download")
